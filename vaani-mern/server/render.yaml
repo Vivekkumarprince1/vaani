@@ -1,0 +1,9 @@
+services:
+  - type: web
+    name: vani-backend
+    env: node
+    buildCommand: npm install
+    startCommand: node app.js
+    envVars:
+      - key: NODE_VERSION
+        value: 20.x

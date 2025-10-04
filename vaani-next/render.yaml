@@ -5,12 +5,15 @@ services:
     plan: free
     region: oregon
     branch: main
-    buildCommand: "npm install && npm run build"
-    startCommand: "npm run start"
+  # Increase Node heap during build/start to mitigate "heap out of memory" for large Next.js builds.
+  # You can also set NODE_OPTIONS in the Render dashboard (env var) to tune this per service.
+  buildCommand: "NODE_OPTIONS=--max-old-space-size=4096 npm install && NODE_OPTIONS=--max-old-space-size=4096 npm run build"
+  startCommand: "NODE_OPTIONS=--max-old-space-size=4096 npm run start"
     pullRequestPreviews: false
     envVars:
-      # Add any Render env vars in the dashboard. Example keys (do NOT commit secrets here):
+  # Add any Render env vars in the dashboard. Example keys (do NOT commit secrets here):
       # - key: JWT_SECRET
+  # - key: NODE_OPTIONS # optional override, e.g. --max-old-space-size=4096
       # - key: MONGODB_URI
       # - key: AZURE_SPEECH_KEY
       # - key: AZURE_SPEECH_REGION

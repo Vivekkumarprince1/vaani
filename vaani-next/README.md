@@ -213,3 +213,19 @@ Notes & troubleshooting
 - Ensure `NODE_ENV=production` is set by Render (it usually is by default).
 - If the Socket.IO client cannot connect, check `NEXT_PUBLIC_SOCKET_URL` and CORS origins in Render.
 - Check Render logs for `> Ready on http://` which indicates the server started.
+
+### Out of memory (FATAL ERROR: Reached heap limit)
+
+If you see a crash with "FATAL ERROR: Reached heap limit Allocation failed - JavaScript heap out of memory" during build or at runtime, this means Node's V8 heap wasn't large enough for the Next.js build or server workload. Common mitigations on Render:
+
+- Increase the V8 heap for build/start by setting NODE_OPTIONS, for example: `--max-old-space-size=4096`. The included `render.yaml` uses this value in build and start commands.
+- Use a larger Render plan (more memory/CPU) if increasing the heap isn't sufficient.
+- Pre-build the Next.js app in CI and push the `.next` build output into the repo or an artifact store so Render doesn't run a heavy build step.
+- Reduce build-time memory usage by disabling unneeded plugins or removing huge static imports.
+
+Example Render env var (in service dashboard)
+- Key: `NODE_OPTIONS`
+- Value: `--max-old-space-size=4096`
+
+If you still face OOM errors, capture Render deploy logs and increase the value (e.g. 8192) or scale the instance.
+

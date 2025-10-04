@@ -1,0 +1,22 @@
+services:
+  - type: web
+    name: vaani-next
+    env: node
+    plan: free
+    region: oregon
+    branch: main
+    buildCommand: "npm install && npm run build"
+    startCommand: "npm run start"
+    pullRequestPreviews: false
+    envVars:
+      # Add any Render env vars in the dashboard. Example keys (do NOT commit secrets here):
+      # - key: JWT_SECRET
+      # - key: MONGODB_URI
+      # - key: AZURE_SPEECH_KEY
+      # - key: AZURE_SPEECH_REGION
+      # - key: AZURE_TRANSLATOR_KEY
+      # - key: AZURE_TRANSLATOR_REGION
+      # - key: NEXT_PUBLIC_CLIENT_URL
+      # - key: NEXT_PUBLIC_API_URL
+    healthCheckPath: "/"
+    autoDeploy: true

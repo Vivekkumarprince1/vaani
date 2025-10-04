@@ -1,5 +1,13 @@
-// Load environment variables from .env.local
-require('dotenv').config({ path: '.env.local' });
+// Load local environment variables only in development so Render/production uses the platform's env vars
+if (process.env.NODE_ENV !== 'production') {
+  // In local/dev runs we load .env.local for convenience
+  try {
+    require('dotenv').config({ path: '.env.local' });
+    console.log('Loaded .env.local for development');
+  } catch (e) {
+    console.warn('Could not load .env.local:', e && e.message);
+  }
+}
 
 const { createServer } = require('http');
 const { parse } = require('url');

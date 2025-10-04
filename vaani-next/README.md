@@ -185,3 +185,31 @@ MIT License
 ---
 
 Made with ❤️ using Next.js
+
+## 🚀 Deploy to Render
+
+This project uses a custom Node server (`server.js`) that starts Next.js and Socket.IO. For Render, we recommend adding the service via the `render.yaml` included in the repository and setting secrets in the Render Dashboard.
+
+Quick steps
+
+- Push your repo to GitHub (branch `main`).
+- In Render, create a new Web Service and connect your repository, or import using `render.yaml`.
+- Set these environment variables on the Render service (do NOT commit secrets to repo):
+   - `MONGO_URI` or `MONGODB_URI` – MongoDB connection string (Atlas recommended)
+   - `JWT_SECRET` – secret used to sign JWT tokens
+   - `AZURE_SPEECH_KEY` and `AZURE_SPEECH_REGION` (if using Azure speech)
+   - `AZURE_TRANSLATOR_KEY` and `AZURE_TRANSLATOR_REGION` (if using Azure translator)
+   - `NEXT_PUBLIC_CLIENT_URL` – URL of client app (optional)
+   - Any other envs listed in `.env.example`
+
+Build & Start commands
+
+- Build command: `npm install && npm run build`
+- Start command: `npm run start`
+
+Notes & troubleshooting
+
+- Do not rely on `.env.local` in production — the server now only loads it in development.
+- Ensure `NODE_ENV=production` is set by Render (it usually is by default).
+- If the Socket.IO client cannot connect, check `NEXT_PUBLIC_SOCKET_URL` and CORS origins in Render.
+- Check Render logs for `> Ready on http://` which indicates the server started.

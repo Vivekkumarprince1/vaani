@@ -580,8 +580,9 @@ app.prepare().then(() => {
     });
   }, 5 * 60 * 1000);
 
-  server.listen(port, (err) => {
+  server.listen(port,'0.0.0.0', (err) => {
     if (err) throw err;
+    console.log(`> Ready on 0.0.0.0:${port}`);
     console.log(`> Ready on http://${hostname}:${port}`);
     console.log(`> Socket.IO server initialized`);
   });

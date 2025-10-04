@@ -9,17 +9,17 @@ services:
   # You can also set NODE_OPTIONS in the Render dashboard (env var) to tune this per service.
   buildCommand: "NODE_OPTIONS=--max-old-space-size=4096 npm install && NODE_OPTIONS=--max-old-space-size=4096 npm run build"
   startCommand: "NODE_OPTIONS=--max-old-space-size=4096 npm run start"
-    pullRequestPreviews: false
-    envVars:
-  # Add any Render env vars in the dashboard. Example keys (do NOT commit secrets here):
-      # - key: JWT_SECRET
-  # - key: NODE_OPTIONS # optional override, e.g. --max-old-space-size=4096
-      # - key: MONGODB_URI
-      # - key: AZURE_SPEECH_KEY
-      # - key: AZURE_SPEECH_REGION
-      # - key: AZURE_TRANSLATOR_KEY
-      # - key: AZURE_TRANSLATOR_REGION
-      # - key: NEXT_PUBLIC_CLIENT_URL
-      # - key: NEXT_PUBLIC_API_URL
-    healthCheckPath: "/"
-    autoDeploy: true
+  pullRequestPreviews: false
+  # Example environment variables you should set in the Render dashboard (do NOT store secrets in this repo):
+  # Recommended: set MONGO_URI (or MONGODB_URI) to your MongoDB connection string (Atlas recommended)
+  # Other required keys for full functionality:
+  # - JWT_SECRET
+  # - AZURE_SPEECH_KEY
+  # - AZURE_SPEECH_REGION
+  # - AZURE_TRANSLATOR_KEY
+  # - AZURE_TRANSLATOR_REGION
+  # Optional client configuration keys:
+  # - NEXT_PUBLIC_CLIENT_URL
+  # - NEXT_PUBLIC_API_URL
+  healthCheckPath: "/"
+  autoDeploy: true

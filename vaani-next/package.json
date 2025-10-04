@@ -1,0 +1,37 @@
+{
+  "name": "next",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "node server.js",
+    "dev:next": "next dev --turbopack",
+    "build": "next build",
+    "start": "NODE_ENV=production node server.js",
+    "start:next": "next start",
+    "lint": "eslint"
+  },
+  "dependencies": {
+    "@heroicons/react": "^2.2.0",
+    "axios": "^1.12.2",
+    "bcryptjs": "^3.0.2",
+    "dotenv": "^17.2.3",
+    "idb": "^8.0.3",
+    "jsonwebtoken": "^9.0.2",
+    "microsoft-cognitiveservices-speech-sdk": "^1.46.0",
+    "mongoose": "^8.18.3",
+    "next": "15.5.4",
+    "react": "19.1.0",
+    "react-dom": "19.1.0",
+    "react-select": "^5.10.2",
+    "socket.io": "^4.8.1",
+    "socket.io-client": "^4.8.1",
+    "uuid": "^13.0.0"
+  },
+  "devDependencies": {
+    "@eslint/eslintrc": "^3",
+    "@tailwindcss/postcss": "^4",
+    "eslint": "^9",
+    "eslint-config-next": "15.5.4",
+    "tailwindcss": "^4"
+  }
+}

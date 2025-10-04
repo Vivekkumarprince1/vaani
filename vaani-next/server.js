@@ -25,11 +25,10 @@ console.log('  AZURE_TRANSLATOR_KEY:', process.env.AZURE_TRANSLATOR_KEY ? '✅ L
 console.log('  AZURE_TRANSLATOR_REGION:', process.env.AZURE_TRANSLATOR_REGION || '❌ Missing');
 
 const dev = process.env.NODE_ENV !== 'production';
-const hostname = 'localhost';
 const port = parseInt(process.env.PORT || '3000', 10);
 
-// Initialize Next.js
-const app = next({ dev, hostname, port });
+// Initialize Next.js. Do not force a hostname here so the HTTP server can bind to 0.0.0.0
+const app = next({ dev });
 const handle = app.getRequestHandler();
 
 // Store active users and their rooms
@@ -580,10 +579,33 @@ app.prepare().then(() => {
     });
   }, 5 * 60 * 1000);
 
-  server.listen(port,'0.0.0.0', (err) => {
+  server.listen(port, '0.0.0.0', (err) => {
     if (err) throw err;
     console.log(`> Ready on 0.0.0.0:${port}`);
-    console.log(`> Ready on http://${hostname}:${port}`);
     console.log(`> Socket.IO server initialized`);
   });
 });
+
+// Global process handlers to surface memory/uncaught errors in logs to aid debugging on Render
+process.on('uncaughtException', (err) => {
+  console.error('Uncaught exception:', err && err.stack || err);
+  // Exit so the platform can restart the process (after logging)
+  process.exit(1);
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('Unhandled Rejection at:', promise, 'reason:', reason);
+});
+
+// Periodically log memory usage to help debug OOM issues in production (every 60s)
+setInterval(() => {
+  try {
+    const mem = process.memoryUsage();
+    console.log('Memory usage:', Object.keys(mem).reduce((acc, k) => {
+      acc[k] = `${Math.round(mem[k] / 1024 / 1024)} MB`;
+      return acc;
+    }, {}));
+  } catch (e) {
+    console.warn('Failed to read memory usage:', e && e.message);
+  }
+}, 60 * 1000);

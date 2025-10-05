@@ -1,10 +1,11 @@
 'use client'
 
 import React, { useEffect } from 'react';
+import TextReader from '../TextReader';
 
 /**
  * Component to display local and remote video streams during calls
- * Now includes transcription overlays on both local and remote videos
+ * Now includes transcription overlays with TextReader component for better readability
  */
 const VideoStreams = ({ 
   localVideoRef, 
@@ -13,7 +14,8 @@ const VideoStreams = ({
   remoteStream,
   localTranscript = '',
   remoteTranscript = '',
-  yourLanguage = 'Your Language'
+  yourLanguage = 'en',
+  yourLanguageName = 'Your Language'
 }) => {
   // Setup video streams when components receive new streams
   useEffect(() => {
@@ -97,13 +99,20 @@ const VideoStreams = ({
         
         {/* Remote Transcription Overlay - What you're hearing (translated) */}
         {remoteTranscript && (
-          <div className="absolute bottom-4 left-4 right-4 bg-black/70 backdrop-blur-md rounded-lg px-4 py-3 shadow-xl animate-fade-in">
-            <div className="text-xs text-cyan-300 font-medium mb-1">
-              🔊 Translated to {yourLanguage}
-            </div>
-            <div className="text-sm text-white leading-relaxed">
-              {remoteTranscript}
-            </div>
+          <div className="absolute bottom-4 left-4 right-4 animate-fade-in">
+            {console.log('Rendering remote TextReader with:', { remoteTranscript, yourLanguage, yourLanguageName })}
+            <TextReader
+              text={remoteTranscript}
+              label={`🔊 Translated to ${yourLanguageName || yourLanguage}`}
+              language={yourLanguage}
+              showControls={true}
+              maxHeight="180px"
+              className="shadow-xl"
+              autoSpeak={true}
+              speechRate={1.0}
+              speechPitch={1.0}
+              speechVolume={1.0}
+            />
           </div>
         )}
       </div>
@@ -120,12 +129,17 @@ const VideoStreams = ({
         
         {/* Local Transcription Overlay - What you're saying */}
         {localTranscript && (
-          <div className="absolute bottom-2 left-2 right-2 bg-emerald-900/80 backdrop-blur-sm rounded px-2 py-1.5 shadow-lg animate-fade-in">
-            <div className="text-[10px] text-emerald-300 font-medium mb-0.5">
-              🎤 You ({yourLanguage})
-            </div>
-            <div className="text-xs text-white leading-snug line-clamp-2">
-              {localTranscript}
+          <div className="absolute bottom-2 left-2 right-2 animate-fade-in">
+            <div 
+              className="bg-emerald-900/90 backdrop-blur-sm rounded-md px-2 py-1.5 shadow-lg"
+              style={{ fontSize: '11px' }}
+            >
+              <div className="text-[10px] text-emerald-300 font-medium mb-0.5">
+                🎤 You ({yourLanguage})
+              </div>
+              <div className="text-white leading-snug line-clamp-2">
+                {localTranscript}
+              </div>
             </div>
           </div>
         )}

@@ -602,6 +602,14 @@ const Dashboard = () => {
 
     pc.oniceconnectionstatechange = () => {
       console.log('ICE connection state:', pc.iceConnectionState);
+      
+      // Play connect beep when connection is established
+      if (pc.iceConnectionState === 'connected') {
+        callSoundPlayer.playConnect().catch(err => {
+          console.log('Could not play connect sound:', err.message);
+        });
+      }
+      
       if (pc.iceConnectionState === 'disconnected' || pc.iceConnectionState === 'failed') {
         endCall();
       }
@@ -639,6 +647,9 @@ const Dashboard = () => {
     }
 
     try {
+      // Enable audio playback (user has interacted by clicking call button)
+      callSoundPlayer.enableUserInteraction();
+      
       // For group/room calls, use the new group call feature
       if (selectedRoom) {
         await startGroupCall(type);
@@ -803,6 +814,10 @@ const Dashboard = () => {
     try {
       console.log('answerCall invoked, incomingCall:', incomingCall);
       console.log('Socket connected?', !!socketManager.socket?.connected, 'socket id:', socketManager.socket?.id);
+      
+      // Enable audio playback (user has interacted by clicking answer)
+      callSoundPlayer.enableUserInteraction();
+      
       setAcceptingCall(true);
       callSoundPlayer.stopAll();
       setCallType(incomingCall.callType);
@@ -875,6 +890,12 @@ const Dashboard = () => {
             });
 
             console.log('✓ Call answered successfully (after deferred offer)');
+            
+            // Play connect beep sound
+            callSoundPlayer.playConnect().catch(err => {
+              console.log('Could not play connect sound:', err.message);
+            });
+            
             setInCall(true);
             setIncomingCall(null);
           } catch (err) {
@@ -909,6 +930,12 @@ const Dashboard = () => {
         });
 
         console.log('✓ Call answered successfully');
+        
+        // Play connect beep sound
+        callSoundPlayer.playConnect().catch(err => {
+          console.log('Could not play connect sound:', err.message);
+        });
+        
         setInCall(true);
         setIncomingCall(null);
         setAcceptingCall(false);

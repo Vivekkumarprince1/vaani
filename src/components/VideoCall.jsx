@@ -71,7 +71,8 @@ const VideoCall = ({
         remoteStream={remoteStream}
         localTranscript={localOriginal}
         remoteTranscript={remoteTranslated}
-        yourLanguage={yourLanguageName}
+        yourLanguage={currentLanguage}
+        yourLanguageName={yourLanguageName}
       />
 
       {/* Call controls (mute, camera, end call) */}

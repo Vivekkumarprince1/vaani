@@ -96,12 +96,13 @@ const normalizeAudioData = (audioData) => {
 };
 
 /**
- * Convert speech to text using Azure Speech SDK
+ * Convert speech to text using Azure Speech SDK with STREAMING support
  * @param {Buffer} audioBuffer - WAV audio buffer
  * @param {string} sourceLanguage - Source language code
+ * @param {Function} onPartialResult - Optional callback for partial results
  * @returns {Promise<{text: string, error: string|null}>}
  */
-const speechToText = async (audioBuffer, sourceLanguage) => {
+const speechToText = async (audioBuffer, sourceLanguage, onPartialResult = null) => {
   try {
     if (!audioBuffer || audioBuffer.length < 44) {
       return { text: '', error: 'Invalid audio data' };
@@ -123,13 +124,18 @@ const speechToText = async (audioBuffer, sourceLanguage) => {
     speechConfig.speechRecognitionLanguage = normalizedLang;
     speechConfig.enableDictation();
     
+    // ✅ OPTIMIZED: Reduce timeouts for faster response
+    speechConfig.setProperty(sdk.PropertyId.SpeechServiceConnection_InitialSilenceTimeoutMs, "3000"); // 3s (was 5s)
+    speechConfig.setProperty(sdk.PropertyId.SpeechServiceConnection_EndSilenceTimeoutMs, "500");    // 500ms (was 1s)
+    
     const pushStream = sdk.AudioInputStream.createPushStream();
     const audioConfig = sdk.AudioConfig.fromStreamInput(pushStream);
     
     const recognizer = new sdk.SpeechRecognizer(speechConfig, audioConfig);
 
+    // ✅ OPTIMIZED: Increase chunk size for faster transmission
     // Write audio data to stream (skip WAV header)
-    const chunkSize = 16384;
+    const chunkSize = 32768; // 32KB (was 16KB)
     let offset = 44;
     
     for (let i = offset; i < audioBuffer.length; i += chunkSize) {
@@ -141,10 +147,26 @@ const speechToText = async (audioBuffer, sourceLanguage) => {
     const result = await new Promise((resolve, reject) => {
       let recognizedText = '';
 
+      // ✅ NEW: Streaming recognition for instant partial results
+      recognizer.recognizing = (s, e) => {
+        if (e.result.reason === sdk.ResultReason.RecognizingSpeech) {
+          const partialText = e.result.text.trim();
+          if (partialText && onPartialResult) {
+            // Send partial result immediately for instant feedback
+            onPartialResult(partialText, false); // false = not final
+          }
+        }
+      };
+
       recognizer.recognized = (s, e) => {
         if (e.result.reason === sdk.ResultReason.RecognizedSpeech) {
           const text = e.result.text.trim();
           recognizedText += text ? ' ' + text : '';
+          
+          // Send final segment immediately
+          if (text && onPartialResult) {
+            onPartialResult(text, true); // true = final
+          }
         }
       };
 
@@ -166,10 +188,11 @@ const speechToText = async (audioBuffer, sourceLanguage) => {
         });
       };
 
+      // ✅ OPTIMIZED: Reduce timeout for faster response
       // Set timeout for recognition
       setTimeout(() => {
         stopRecognition();
-      }, 10000); // 10 second timeout
+      }, 5000); // 5 second timeout (was 10s)
 
       recognizer.startContinuousRecognitionAsync();
     });
@@ -181,8 +204,18 @@ const speechToText = async (audioBuffer, sourceLanguage) => {
   }
 };
 
+// ✅ OPTIMIZED: Keep-alive agent for Azure API connection pooling
+const https = require('https');
+const keepAliveAgent = new https.Agent({
+  keepAlive: true,
+  keepAliveMsecs: 30000,
+  maxSockets: 50,
+  maxFreeSockets: 10,
+  timeout: 60000
+});
+
 /**
- * Translate text using Azure Translator API
+ * Translate text using Azure Translator API with CONNECTION POOLING
  * @param {string} text - Text to translate
  * @param {string} sourceLanguage - Source language code (short code like 'en', 'hi')
  * @param {string} targetLanguage - Target language code (short code like 'fr', 'es')
@@ -240,6 +273,7 @@ const translateText = async (text, sourceLanguage, targetLanguage) => {
 
     console.log(`🌐 Translating: "${text}" from ${sourceCode} to ${targetCode}`);
 
+    // ✅ OPTIMIZED: Add timeout and keep-alive agent for connection pooling
     const response = await axios({
       method: 'post',
       url: url,
@@ -252,7 +286,9 @@ const translateText = async (text, sourceLanguage, targetLanguage) => {
       },
       data: [{
         text: text
-      }]
+      }],
+      timeout: 3000, // 3 second timeout for translation
+      httpsAgent: keepAliveAgent // Use connection pooling
     });
 
     const translatedText = response.data[0].translations[0].text;
@@ -266,77 +302,14 @@ const translateText = async (text, sourceLanguage, targetLanguage) => {
 };
 
 /**
- * Convert text to speech using Azure Speech SDK
- * @param {string} text - Text to convert
- * @param {string} targetLanguage - Target language code
- * @returns {Promise<{audio: Buffer|null, error: string|null}>}
- */
-const textToSpeech = async (text, targetLanguage) => {
-  try {
-    if (!text || !text.trim()) {
-      return { audio: null, error: 'No text to synthesize' };
-    }
-
-    const normalizedLang = normalizeLanguage(targetLanguage);
-    
-    const speechConfig = sdk.SpeechConfig.fromSubscription(SPEECH_KEY, SPEECH_REGION);
-    speechConfig.speechSynthesisLanguage = normalizedLang;
-    
-    // Set voice based on language
-    const voiceMap = {
-      'en-US': 'en-US-JennyNeural',
-      'hi-IN': 'hi-IN-SwaraNeural',
-      'es-ES': 'es-ES-ElviraNeural',
-      'fr-FR': 'fr-FR-DeniseNeural',
-      'de-DE': 'de-DE-KatjaNeural',
-      'ja-JP': 'ja-JP-NanamiNeural',
-      'zh-CN': 'zh-CN-XiaoxiaoNeural',
-      'pa-IN': 'pa-IN-InderNeural',
-    };
-    
-    speechConfig.speechSynthesisVoiceName = voiceMap[normalizedLang] || voiceMap['en-US'];
-    
-    // Set output format to WAV (16kHz, 16-bit, mono)
-    speechConfig.speechSynthesisOutputFormat = sdk.SpeechSynthesisOutputFormat.Riff16Khz16BitMonoPcm;
-    
-    // Use pull stream to get audio data
-    const audioConfig = sdk.AudioConfig.fromDefaultSpeakerOutput();
-    const synthesizer = new sdk.SpeechSynthesizer(speechConfig, null);
-
-    const result = await new Promise((resolve, reject) => {
-      synthesizer.speakTextAsync(
-        text,
-        (result) => {
-          if (result.reason === sdk.ResultReason.SynthesizingAudioCompleted) {
-            const audioData = Buffer.from(result.audioData);
-            console.log(`🔊 TTS: Generated audio, size: ${audioData.length} bytes, first 20 bytes: ${audioData.slice(0, 20).toString('hex')}`);
-            synthesizer.close();
-            resolve(audioData);
-          } else {
-            synthesizer.close();
-            reject(new Error('Speech synthesis failed'));
-          }
-        },
-        (error) => {
-          synthesizer.close();
-          reject(error);
-        }
-      );
-    });
-
-    return { audio: result, error: null };
-  } catch (error) {
-    console.error('Text to speech error:', error);
-    return { audio: null, error: error.message };
-  }
-};
-
-/**
- * Complete speech translation pipeline
+ * ✅ UPDATED - Speech translation pipeline (TEXT-ONLY - no TTS)
+ * Your workflow: Speech Recognition → Text Translation → Text Display
+ * Returns only text results, no audio generation
+ * 
  * @param {Buffer|ArrayBuffer|string} audioData - Audio data
  * @param {string} sourceLanguage - Source language code
  * @param {string} targetLanguage - Target language code
- * @returns {Promise<{text: {original: string, translated: string}, audio: Buffer|null, error: string|null}>}
+ * @returns {Promise<{text: {original: string, translated: string}, error: string|null}>}
  */
 const translateSpeech = async (audioData, sourceLanguage, targetLanguage) => {
   try {
@@ -346,7 +319,6 @@ const translateSpeech = async (audioData, sourceLanguage, targetLanguage) => {
     if (!audioBuffer) {
       return {
         text: { original: '', translated: '' },
-        audio: null,
         error: 'Invalid audio data'
       };
     }
@@ -357,7 +329,6 @@ const translateSpeech = async (audioData, sourceLanguage, targetLanguage) => {
     if (sttError || !originalText) {
       return {
         text: { original: '', translated: '' },
-        audio: null,
         error: sttError || 'No speech detected'
       };
     }
@@ -374,44 +345,32 @@ const translateSpeech = async (audioData, sourceLanguage, targetLanguage) => {
     if (translateError) {
       return {
         text: { original: originalText, translated: '' },
-        audio: null,
         error: translateError
       };
     }
 
     console.log('Translated text:', translatedText);
 
-    // Step 3: Text to speech
-    const { audio: translatedAudio, error: ttsError } = await textToSpeech(
-      translatedText,
-      targetLanguage
-    );
-    
-    if (ttsError) {
-      return {
-        text: { original: originalText, translated: translatedText },
-        audio: null,
-        error: ttsError
-      };
-    }
+    // ❌ REMOVED: Text-to-speech step - using TextReader instead
+    // Your workflow ends with text translation and display
 
     return {
       text: { original: originalText, translated: translatedText },
-      audio: translatedAudio,
       error: null
     };
   } catch (error) {
     console.error('Speech translation error:', error);
     return {
       text: { original: '', translated: '' },
-      audio: null,
       error: error.message
     };
   }
 };
 
 /**
- * Recognize speech from audio (voice-to-text only)
+ * ✅ USED IN YOUR WORKFLOW - Recognize speech from audio (voice-to-text only)
+ * This is part of your workflow: Speech Recognition → Text Translation → Text Display
+ * 
  * @param {Buffer} audioBuffer - Audio buffer
  * @param {string} sourceLanguage - Source language code
  * @returns {Promise<string>} - Recognized text
@@ -427,7 +386,9 @@ const recognizeSpeech = async (audioBuffer, sourceLanguage) => {
 };
 
 /**
- * Translate text only (no audio)
+ * ✅ USED IN YOUR WORKFLOW - Translate text only (no audio)
+ * This is part of your workflow: Speech Recognition → Text Translation → Text Display
+ * 
  * @param {string} text - Text to translate
  * @param {string} sourceLanguage - Source language code
  * @param {string} targetLanguage - Target language code
@@ -444,11 +405,12 @@ const translateTextOnly = async (text, sourceLanguage, targetLanguage) => {
 };
 
 module.exports = {
-  translateSpeech,
-  recognizeSpeech,
-  translateText: translateTextOnly,
-  speechToText,
-  textToSpeech,
-  synthesizeSpeech: textToSpeech, // Alias for group call handler
-  normalizeLanguage
+  // ✅ USED IN YOUR WORKFLOW
+  recognizeSpeech,        // Speech-to-text (voice recognition)
+  translateText: translateTextOnly,  // Text translation
+  normalizeLanguage,      // Language code normalization
+  
+  // ✅ USED IN YOUR WORKFLOW (text-only pipeline)
+  translateSpeech,        // Full pipeline (STT + Translation - no TTS)
+  speechToText           // Raw speech-to-text function
 };

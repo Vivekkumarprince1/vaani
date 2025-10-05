@@ -5,6 +5,7 @@ import { useTranslation } from '../contexts/TranslationContext';
 import { getIceServers } from '../utils/webrtcConfig';
 import CallControls from './VideoCallComponents/CallControls';
 import useGroupCallAudioProcessing from '../hooks/useGroupCallAudioProcessing';
+import TextReader from './TextReader';
 
 /**
  * GroupVideoCall component for multi-participant video calls with translation
@@ -419,18 +420,38 @@ const GroupVideoCall = ({
         </div>
       </div>
       
-      {/* Transcription Display */}
-      <div className="absolute bottom-32 left-4 right-4 max-h-40 overflow-y-auto">
+      {/* Transcription Display with TextReader */}
+      <div className="absolute bottom-32 left-4 right-4 space-y-3 max-h-80 overflow-y-auto">
         {transcripts.length > 0 && (
-          <div className="bg-black/70 rounded-lg p-3 space-y-1">
-            {transcripts.slice(-5).map((transcript, idx) => (
-              <div key={idx} className="text-white text-sm">
-                <span className="font-semibold text-blue-400">{transcript.username}:</span>{' '}
-                <span className={transcript.isTranslated ? 'text-green-300' : ''}>
-                  {transcript.text}
-                </span>
-              </div>
-            ))}
+          <div className="space-y-2">
+            {/* Show last 3 transcripts with TextReader for better readability */}
+            {transcripts.slice(-3).map((transcript, idx) => {
+              const isMe = transcript.userId === currentUserId;
+              const isTranslated = transcript.isTranslated;
+              
+              return (
+                <div key={`${transcript.userId}-${idx}-${transcript.timestamp}`} className="animate-fade-in">
+                  <TextReader
+                    text={transcript.text}
+                    label={isTranslated 
+                      ? `🌐 ${transcript.username} (translated to ${currentLanguage})` 
+                      : `${isMe ? '🎤' : '👤'} ${transcript.username} (${transcript.language})`
+                    }
+                    language={transcript.language}
+                    showControls={isTranslated}
+                    maxHeight="120px"
+                    autoSpeak={isTranslated && !isMe}
+                    speechRate={1.0}
+                    speechPitch={1.0}
+                    speechVolume={1.0}
+                    className={`
+                      ${isTranslated ? 'ring-2 ring-green-400/50' : ''}
+                      ${isMe ? 'ring-2 ring-blue-400/50' : ''}
+                    `}
+                  />
+                </div>
+              );
+            })}
           </div>
         )}
       </div>
@@ -505,3 +526,28 @@ const ParticipantVideo = ({ participant, activeSpeaker }) => {
 };
 
 export default GroupVideoCall;
+
+// Add global styles for animations
+if (typeof document !== 'undefined') {
+  const style = document.createElement('style');
+  style.textContent = `
+    @keyframes fadeIn {
+      from {
+        opacity: 0;
+        transform: translateY(10px);
+      }
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
+    }
+    
+    .animate-fade-in {
+      animation: fadeIn 0.3s ease-in;
+    }
+  `;
+  if (!document.head.querySelector('style[data-group-call-styles]')) {
+    style.setAttribute('data-group-call-styles', 'true');
+    document.head.appendChild(style);
+  }
+}

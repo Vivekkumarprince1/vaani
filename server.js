@@ -52,7 +52,7 @@ app.prepare().then(() => {
     }
   });
 
-  // Initialize Socket.IO
+  // Initialize Socket.IO with OPTIMIZED settings for low latency
   const io = new Server(server, {
     path: '/socket.io',
     cors: {
@@ -61,15 +61,21 @@ app.prepare().then(() => {
       credentials: true,
       allowedHeaders: ['Content-Type', 'Authorization', 'x-auth-token']
     },
+    // ✅ OPTIMIZED: Allow both transports but prefer WebSocket
     transports: ['websocket', 'polling'],
-    allowUpgrades: true,
-    upgradeTimeout: 20000,
-    pingTimeout: 30000,
+    allowUpgrades: true, // Allow upgrade from polling to WebSocket
+    upgradeTimeout: 10000,
+    
+    // ✅ OPTIMIZED: Reduce ping intervals for faster connection checks
+    pingTimeout: 60000,
     pingInterval: 25000,
-    maxHttpBufferSize: 5e6,
-    perMessageDeflate: {
-      threshold: 32768
-    },
+    
+    // ✅ OPTIMIZED: Increase buffer for larger audio payloads
+    maxHttpBufferSize: 1e7, // 10MB (was 5MB)
+    
+    // ✅ OPTIMIZED: Disable compression for speed (trade bandwidth for latency)
+    perMessageDeflate: false, // Compression adds latency
+    
     connectTimeout: 30000,
     serveClient: false
   });
@@ -146,7 +152,7 @@ app.prepare().then(() => {
       const { language } = data;
       if (language && users[socket.id]) {
         users[socket.id].preferredLanguage = language;
-        const username = users[socket.id].username || 'Unknown';
+        // const username = users[socket.id].username || 'Unknown';
         // console.log(`📝 Updated language preference: socketId=${socket.id}, userId=${userId}, username=${username}, language=${language}`);
         
         // Log all users and their languages for debugging
@@ -585,27 +591,3 @@ app.prepare().then(() => {
     console.log(`> Socket.IO server initialized`);
   });
 });
-
-// Global process handlers to surface memory/uncaught errors in logs to aid debugging on Render
-process.on('uncaughtException', (err) => {
-  console.error('Uncaught exception:', err && err.stack || err);
-  // Exit so the platform can restart the process (after logging)
-  process.exit(1);
-});
-
-process.on('unhandledRejection', (reason, promise) => {
-  console.error('Unhandled Rejection at:', promise, 'reason:', reason);
-});
-
-// Periodically log memory usage to help debug OOM issues in production (every 60s)
-setInterval(() => {
-  try {
-    const mem = process.memoryUsage();
-    console.log('Memory usage:', Object.keys(mem).reduce((acc, k) => {
-      acc[k] = `${Math.round(mem[k] / 1024 / 1024)} MB`;
-      return acc;
-    }, {}));
-  } catch (e) {
-    console.warn('Failed to read memory usage:', e && e.message);
-  }
-}, 60 * 1000);

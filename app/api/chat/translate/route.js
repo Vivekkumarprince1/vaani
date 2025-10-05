@@ -42,7 +42,7 @@ export async function POST(request) {
     const keys = validTexts.map(t => translationCache.makeKey(t, targetLang, sourceLang));
     const cachedMap = translationCache.getMany(keys);
     if (cachedMap.size === validTexts.length) {
-      console.log('♻️ Returning fully cached batch translations');
+      // console.log('♻️ Returning fully cached batch translations');
       const cachedTranslations = keys.map(k => cachedMap.get(k));
       if (isBatch) {
         return NextResponse.json({ translations: cachedTranslations, detectedLanguages: keys.map(() => sourceLang || null) });

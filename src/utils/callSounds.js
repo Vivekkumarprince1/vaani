@@ -1,104 +1,70 @@
-// Call sounds utility for playing ringtones and notifications
+// Optimized call sounds utility for ringtone, ringback, connect, and disconnect
 
 class CallSounds {
   constructor() {
     this.sounds = {
       ringtone: null,
       ringback: null,
+      connect: null,
       disconnect: null
     };
     this.initialized = false;
-    this.userInteracted = false;
-    this.playingSound = null; // Track currently playing sound
+    this.playingSound = null;
+    this.audioContext = null;
+    this._loopOscillator = null;
   }
 
   /**
-   * Initialize audio files - called lazily on first play
+   * Initialize audio - only uses generated tones
    */
   init() {
     if (this.initialized) return;
+    this.initialized = true;
+    console.log('✓ Call sounds initialized (using generated tones)');
+  }
 
+  /**
+   * Initialize AudioContext for fallback tones
+   */
+  async ensureAudioContext() {
     try {
-      // Create audio instances with preload
-      this.sounds.ringtone = new Audio('/sounds/ringtone.mp3');
-      this.sounds.ringback = new Audio('/sounds/ringback.mp3');
-      this.sounds.disconnect = new Audio('/sounds/disconnect.mp3');
-
-      // Set properties
-      this.sounds.ringtone.loop = true;
-      this.sounds.ringback.loop = true;
-      this.sounds.ringtone.preload = 'auto';
-      this.sounds.ringback.preload = 'auto';
-      this.sounds.disconnect.preload = 'auto';
-
-      // Add volume control (0.0 to 1.0)
-      this.sounds.ringtone.volume = 0.7;
-      this.sounds.ringback.volume = 0.7;
-      this.sounds.disconnect.volume = 0.8;
-
-      this.initialized = true;
-      console.log('✓ Call sounds initialized');
-    } catch (error) {
-      console.error('Error initializing call sounds:', error);
+      if (!this.audioContext) {
+        const AC = window.AudioContext || window.webkitAudioContext;
+        if (AC) this.audioContext = new AC();
+      }
+      if (this.audioContext?.state === 'suspended') {
+        await this.audioContext.resume().catch(() => {});
+      }
+      return this.audioContext;
+    } catch (err) {
+      return null;
     }
   }
 
   /**
-   * Enable user interaction flag (call this on any user action)
-   */
-  enableUserInteraction() {
-    this.userInteracted = true;
-  }
-
-  /**
-   * Safely play an audio element with proper state checking
+   * Safely play an audio element
    */
   async safePlay(audioElement, soundName) {
-    if (!audioElement) return false;
+    if (!audioElement) {
+      console.warn(`⚠️ ${soundName} not initialized`);
+      return false;
+    }
 
     try {
-      // Reset if audio is already playing
       if (!audioElement.paused) {
         audioElement.pause();
         audioElement.currentTime = 0;
       }
 
-      // Try to play
-      const playPromise = audioElement.play();
-      
-      if (playPromise !== undefined) {
-        await playPromise;
-        this.playingSound = soundName;
-        console.log(`✓ Playing ${soundName}`);
-        return true;
-      }
+      await audioElement.play();
+      this.playingSound = soundName;
+      console.log(`✓ Playing ${soundName}`);
+      return true;
     } catch (err) {
-      // Handle different error types
-      if (err.name === 'NotAllowedError') {
-        console.warn(`⚠️ ${soundName} blocked - user interaction required`);
-      } else if (err.name === 'NotSupportedError') {
-        console.warn(`⚠️ ${soundName} - audio format not supported`);
-      } else {
+      if (err.name !== 'NotAllowedError') {
         console.warn(`⚠️ Could not play ${soundName}:`, err.message);
       }
       return false;
-    }
-  }
-
-  /**
-   * Safely stop an audio element
-   */
-  safeStop(audioElement, soundName) {
-    if (!audioElement) return;
-
-    try {
-      if (!audioElement.paused) {
-        audioElement.pause();
-        console.log(`✓ Stopped ${soundName}`);
-      }
-      audioElement.currentTime = 0;
-    } catch (err) {
-      console.warn(`⚠️ Error stopping ${soundName}:`, err.message);
     }
   }
 
@@ -107,8 +73,14 @@ class CallSounds {
    */
   async playRingtone() {
     this.init();
-    this.stopAll(); // Stop any other sounds first
-    return await this.safePlay(this.sounds.ringtone, 'ringtone');
+    this.stopAll();
+    
+    const ok = await this.safePlay(this.sounds.ringtone, 'ringtone');
+    if (!ok) {
+      // Fallback to generated tone
+      await this.ensureAudioContext();
+      this._startGeneratedLoop(420, 'ringtone');
+    }
   }
 
   /**
@@ -116,66 +88,213 @@ class CallSounds {
    */
   async playRingback() {
     this.init();
-    this.stopAll(); // Stop any other sounds first
-    return await this.safePlay(this.sounds.ringback, 'ringback');
+    this.stopAll();
+    
+    // Use generated tone for ringback
+    await this.ensureAudioContext();
+    this._startGeneratedLoop(620, 'ringback');
   }
 
   /**
-   * Play disconnect sound
+   * Play connect sound (call answered)
    */
-  async playDisconnect() {
+  async playConnect() {
     this.init();
+    this.stopAll();
     
-    // Always create a fresh audio instance for disconnect sound
-    // This prevents "operation not supported" errors
-    try {
-      const disconnectSound = new Audio('/sounds/disconnect.mp3');
-      disconnectSound.volume = 0.8;
-      
-      const playPromise = disconnectSound.play();
-      if (playPromise !== undefined) {
-        await playPromise;
-        console.log('✓ Playing disconnect sound');
-      }
-    } catch (err) {
-      // Silently fail for disconnect sound to avoid console noise
-      if (err.name !== 'NotAllowedError') {
-        console.warn('Could not play disconnect sound');
-      }
+    // Use generated beep for connect
+    const ac = await this.ensureAudioContext();
+    if (ac) {
+      await this._playGeneratedBeep(880, 0.12, 0.6);
+      this.playingSound = 'connect';
+      console.log('✓ Playing connect beep');
     }
   }
 
   /**
-   * Stop ringtone
+   * Play disconnect sound (call ended)
    */
-  stopRingtone() {
-    this.safeStop(this.sounds.ringtone, 'ringtone');
+  async playDisconnect() {
+    this.init();
+    
+    // Use generated beep for disconnect
+    const ac = await this.ensureAudioContext();
+    if (ac) {
+      await this._playGeneratedBeep(440, 0.18, 0.8);
+      console.log('✓ Playing disconnect beep');
+    }
   }
 
   /**
-   * Stop ringback
+   * Generate looped tone for ringtone/ringback fallback
    */
-  stopRingback() {
-    this.safeStop(this.sounds.ringback, 'ringback');
+  _startGeneratedLoop(freq, name) {
+    if (!this.audioContext) return;
+    
+    try {
+      const ac = this.audioContext;
+      const osc = ac.createOscillator();
+      const gain = ac.createGain();
+      
+      osc.type = 'sine';
+      osc.frequency.value = freq;
+      gain.gain.value = 0.0001;
+      
+      osc.connect(gain);
+      gain.connect(ac.destination);
+      osc.start();
+
+      // Pulsing pattern
+      const pulse = () => {
+        const t = ac.currentTime;
+        gain.gain.cancelScheduledValues(t);
+        gain.gain.setValueAtTime(0.0001, t);
+        gain.gain.linearRampToValueAtTime(0.7, t + 0.02);
+        gain.gain.linearRampToValueAtTime(0.0001, t + 0.08);
+      };
+      
+      pulse();
+      const timer = setInterval(pulse, 400);
+
+      this._loopOscillator = { osc, gain, timer };
+      this.playingSound = name;
+      console.log(`✓ Started generated ${name}`);
+    } catch (err) {
+      console.warn('⚠️ Failed to start generated loop:', err.message);
+    }
   }
 
   /**
-   * Stop all sounds immediately
+   * Stop generated loop
+   */
+  _stopGeneratedLoop() {
+    if (this._loopOscillator) {
+      const { osc, gain, timer } = this._loopOscillator;
+      clearInterval(timer);
+      try { osc.stop(); gain.disconnect(); } catch (e) {}
+      this._loopOscillator = null;
+    }
+  }
+
+  /**
+   * Play one-off generated beep
+   */
+  async _playGeneratedBeep(freq, duration, volume) {
+    const ac = await this.ensureAudioContext();
+    if (!ac) return;
+
+    return new Promise((resolve) => {
+      const osc = ac.createOscillator();
+      const gain = ac.createGain();
+      
+      osc.type = 'sine';
+      osc.frequency.value = freq;
+      gain.gain.value = volume;
+      
+      osc.connect(gain);
+      gain.connect(ac.destination);
+      osc.start();
+      
+      setTimeout(() => {
+        try { osc.stop(); osc.disconnect(); gain.disconnect(); } catch (e) {}
+        resolve();
+      }, duration * 1000);
+    });
+  }
+
+  /**
+   * Stop all sounds
    */
   stopAll() {
-    this.stopRingtone();
-    this.stopRingback();
+    // Stop ringtone audio file
+    if (this.sounds.ringtone && !this.sounds.ringtone.paused) {
+      this.sounds.ringtone.pause();
+      this.sounds.ringtone.currentTime = 0;
+    }
+    // Stop any generated loops
+    this._stopGeneratedLoop();
     this.playingSound = null;
   }
 
   /**
-   * Get current playing sound
+   * Stop specific sounds
+   */
+  stopRingtone() {
+    if (this.sounds.ringtone && !this.sounds.ringtone.paused) {
+      this.sounds.ringtone.pause();
+      this.sounds.ringtone.currentTime = 0;
+    }
+    if (this.playingSound === 'ringtone') this._stopGeneratedLoop();
+  }
+
+  stopRingback() {
+    if (this.playingSound === 'ringback') this._stopGeneratedLoop();
+  }
+
+  /**
+   * Get currently playing sound
    */
   getCurrentSound() {
     return this.playingSound;
   }
+
+  /**
+   * Enable user interaction flag and unlock audio
+   */
+  enableUserInteraction() {
+    this.unlockAudio().catch(() => {});
+  }
+
+  /**
+   * Compatibility helper used by components to satisfy browser autoplay checks.
+   * Attempts to unlock audio and resume the AudioContext. Resolves when playback
+   * is allowed, rejects otherwise.
+   */
+  async ensurePlaybackAllowed() {
+    try {
+      // Try the unlock flow first
+      const unlocked = await this.unlockAudio();
+      if (unlocked) return true;
+
+      // If unlockAudio didn't explicitly succeed, try to resume audio context
+      const ac = await this.ensureAudioContext();
+      if (ac) {
+        if (ac.state === 'suspended') {
+          try {
+            await ac.resume();
+            return true;
+          } catch (e) {
+            // continue to failure
+          }
+        } else {
+          return true;
+        }
+      }
+
+      throw new Error('Playback not allowed');
+    } catch (err) {
+      return Promise.reject(err);
+    }
+  }
+
+  /**
+   * Unlock audio playback (call on user gesture)
+   */
+  async unlockAudio() {
+    const ac = await this.ensureAudioContext();
+    if (ac) {
+      try {
+        await this._playGeneratedBeep(440, 0.01, 0.001);
+        console.log('✓ Audio unlocked');
+        return true;
+      } catch (err) {
+        return false;
+      }
+    }
+    return false;
+  }
 }
 
-// Create and export a singleton instance
+// Export singleton instance
 const callSounds = new CallSounds();
 export default callSounds;

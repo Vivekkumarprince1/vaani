@@ -1,8 +1,9 @@
 /**
  * Handle group call audio translation functionality
  * Supports multiple participants with speaker detection and per-user translation
+ * Workflow: Speech Recognition → Text Translation → Text Display (TextReader)
  */
-const { recognizeSpeech, translateText, synthesizeSpeech } = require('../utils/speechTranslator');
+const { recognizeSpeech, translateText } = require('../utils/speechTranslator');
 
 const handleGroupCallAudioTranslation = (io, socket, users) => {
   
@@ -164,57 +165,6 @@ const handleGroupCallAudioTranslation = (io, socket, users) => {
       console.error('Error in group call text translation:', error);
       socket.emit('groupCallError', {
         message: 'Translation failed',
-        requestId: data.requestId
-      });
-    }
-  });
-
-  // Handle text-to-speech synthesis for group calls
-  socket.on('groupCallSynthesizeSpeech', async (data) => {
-    try {
-      const { text, targetLanguage, speakerId, speakerName, requestId } = data;
-      const listenerId = socket.user.userId;
-      
-      console.log('\n🔊 [GROUP CALL] Text-to-Speech');
-      console.log(`   👤 Speaker: ${speakerName || speakerId}`);
-      console.log(`   👂 Listener ID: ${listenerId}`);
-      console.log(`   📝 Language: ${targetLanguage}`);
-      console.log(`   💬 Text: "${text}"`);
-      
-      if (!text || !text.trim()) {
-        console.warn('Empty text for synthesis');
-        return;
-      }
-      
-      // Synthesize speech
-      const { audio: audioData, error: synthesisError } = await synthesizeSpeech(text, targetLanguage);
-      
-      if (synthesisError || !audioData) {
-        console.error('Speech synthesis failed:', synthesisError);
-        socket.emit('groupCallError', {
-          message: 'Speech synthesis failed',
-          requestId
-        });
-        return;
-      }
-      
-      console.log(`✅ Speech synthesized, audio size: ${audioData.length} bytes`);
-      console.log(`🔊 Audio data type: ${typeof audioData}, isBuffer: ${Buffer.isBuffer(audioData)}`);
-      console.log(`🔊 Audio data sample: ${audioData.toString('base64').substring(0, 100)}...`);
-      
-      // Send synthesized audio back to the listener
-      socket.emit('groupCallSynthesizedAudio', {
-        audio: audioData.toString('base64'),
-        speakerId,
-        speakerName: speakerName || 'Unknown',
-        targetLanguage,
-        requestId
-      });
-      
-    } catch (error) {
-      console.error('Error in group call speech synthesis:', error);
-      socket.emit('groupCallError', {
-        message: 'Speech synthesis failed',
         requestId: data.requestId
       });
     }

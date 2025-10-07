@@ -1,7 +1,7 @@
 'use client'
 
 import React, { useState, useEffect } from 'react';
-import Select from 'react-select/dist';
+import Select from 'react-select';
 import axios from 'axios';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || '/api';

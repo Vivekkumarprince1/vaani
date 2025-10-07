@@ -41,6 +41,15 @@ const findUserByUserId = (userId) => {
 };
 
 app.prepare().then(() => {
+  // If running on Vercel platform, do not start the custom Node server.
+  // Vercel runs Next.js via serverless/edge functions and does not support
+  // long-lived socket servers started from within the deployment. In that
+  // case, the frontend will be deployed to Vercel and the socket server
+  // should be deployed separately (see DEPLOYMENT.md).
+  if (process.env.VERCEL) {
+    console.log('Detected VERCEL environment; skipping custom server startup.');
+    return;
+  }
   const server = createServer(async (req, res) => {
     try {
       const parsedUrl = parse(req.url, true);
@@ -56,7 +65,8 @@ app.prepare().then(() => {
   const io = new Server(server, {
     path: '/socket.io',
     cors: {
-      origin: process.env.NEXT_PUBLIC_CLIENT_URL || `http://localhost:${port}`,
+      // origin: process.env.NEXT_PUBLIC_CLIENT_URL || `http://localhost:${port}`,
+      origin: true,
       methods: ['GET', 'POST', 'PUT', 'DELETE'],
       credentials: true,
       allowedHeaders: ['Content-Type', 'Authorization', 'x-auth-token']

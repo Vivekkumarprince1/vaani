@@ -70,28 +70,7 @@ app.prepare().then(() => {
 
 
 cors: {
-  origin: (origin, callback) => {
-    if (!isProduction) {
-      // ✅ Allow all in development
-      callback(null, true);
-    } else {
-      // Use environment variable for allowed origins, fallback to common ones
-      const allowedOrigins = process.env.ALLOW_ORIGIN ?
-        process.env.ALLOW_ORIGIN.split(',') :
-        [
-          'https://vaani-lq1ltpah6-vivek-kumars-projects-129c22bf.vercel.app',
-          'https://vaani-ivory.vercel.app',
-          'https://vaani-ivory.vercel.app/dashboard'
-        ];
-
-      if (!origin || allowedOrigins.includes(origin)) {
-        callback(null, true);
-      } else {
-        console.log('CORS blocked origin:', origin);
-        callback(new Error('Not allowed by CORS'));
-      }
-    }
-  },
+  origin: 'https://vaani-ivory.vercel.app',
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   credentials: true,
   allowedHeaders: ['Content-Type', 'Authorization', 'x-auth-token']

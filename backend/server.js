@@ -19,6 +19,9 @@ console.log('  AZURE_SPEECH_REGION:', envConfig.AZURE_SPEECH_REGION ? '✅ Loade
 console.log('  AZURE_TRANSLATOR_KEY:', envConfig.AZURE_TRANSLATOR_KEY ? '✅ Loaded' : '❌ Missing');
 console.log('  AZURE_TRANSLATOR_REGION:', envConfig.AZURE_TRANSLATOR_REGION ? '✅ Loaded' : '❌ Missing');
 console.log('  JWT_SECRET:', envConfig.JWT_SECRET ? '✅ Loaded' : '❌ Missing');
+console.log('  NODE_ENV:', envConfig.NODE_ENV || 'development');
+console.log('  PORT:', envConfig.PORT || '3001');
+console.log('  ALLOWED_ORIGINS:', envConfig.ALLOWED_ORIGINS || '❌ Missing');
 
 
 if (!ttsAvailable) {

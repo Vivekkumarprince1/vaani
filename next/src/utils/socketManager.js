@@ -9,7 +9,7 @@ class SocketManager {
   constructor() {
     this.socket = null;
     this.token = null;
-    this.baseUrl = process.env.NEXT_PUBLIC_SOCKET_URL || (typeof window !== 'undefined' ? window.location.origin : 'http://localhost:3000');
+    this.baseUrl = (typeof window !== 'undefined' ? window.location.origin : 'http://localhost:3000');
   // event -> Set of handlers
   this.eventHandlers = new Map();
     this.isConnected = false;

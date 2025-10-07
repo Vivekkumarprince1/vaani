@@ -61,16 +61,36 @@ app.prepare().then(() => {
     }
   });
 
+      const isProduction = process.env.NODE_ENV === 'production';
+
   // Initialize Socket.IO with OPTIMIZED settings for low latency
   const io = new Server(server, {
     path: '/socket.io',
-    cors: {
-      // origin: process.env.NEXT_PUBLIC_CLIENT_URL || `http://localhost:${port}`,
-      origin: true,
-      methods: ['GET', 'POST', 'PUT', 'DELETE'],
-      credentials: true,
-      allowedHeaders: ['Content-Type', 'Authorization', 'x-auth-token']
-    },
+
+
+cors: {
+  origin: (origin, callback) => {
+    if (!isProduction) {
+      // ✅ Allow all in development
+      callback(null, true);
+    } else {
+      const allowedOrigins = [
+        'https://vaani-lq1ltpah6-vivek-kumars-projects-129c22bf.vercel.app',
+        'https://www.vaani.app'
+      ] || process.env.ALLOW_ORIGIN;
+      if (!origin || allowedOrigins.includes(origin)) {
+        callback(null, true);
+      } else {
+        console.log('CORS blocked origin:', origin);
+        callback(new Error('Not allowed by CORS'));
+      }
+    }
+  },
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  credentials: true,
+  allowedHeaders: ['Content-Type', 'Authorization', 'x-auth-token']
+},
+
     // ✅ OPTIMIZED: Allow both transports but prefer WebSocket
     transports: ['websocket', 'polling'],
     allowUpgrades: true, // Allow upgrade from polling to WebSocket

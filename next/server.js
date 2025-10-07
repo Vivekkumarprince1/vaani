@@ -15,13 +15,14 @@ console.log('  AZURE_SPEECH_REGION:', envConfig.AZURE_SPEECH_REGION || '❌ Miss
 console.log('  AZURE_TRANSLATOR_KEY:', envConfig.AZURE_TRANSLATOR_KEY ? '✅ Loaded' : '❌ Missing');
 console.log('  AZURE_TRANSLATOR_REGION:', envConfig.AZURE_TRANSLATOR_REGION || '❌ Missing');
 console.log('  JWT_SECRET:', envConfig.JWT_SECRET ? '✅ Loaded' : '❌ Missing');
-console.log('NODE_STATUS:',envConfig.NODE_ENV);
-console.log('ALLOWED_ORIGINS:',envConfig.ALLOWED_ORIGINS);
+console.log('  NODE_ENV:', envConfig.NODE_ENV || 'development');
+console.log('  PORT:', envConfig.PORT || '3000');
+console.log('  ALLOWED_ORIGINS:', envConfig.ALLOWED_ORIGINS || '❌ Missing');
 
 
 
 const dev = envConfig.NODE_ENV !== 'production';
-const port = parseInt(envConfig.PORT || '3000', 10);
+const port = parseInt(process.env.PORT || envConfig.PORT || '3000', 10);
 
 // Initialize Next.js. Do not force a hostname here so the HTTP server can bind to 0.0.0.0
 const app = next({ dev });
@@ -47,16 +48,7 @@ app.prepare().then(() => {
     console.log('To run Socket.IO server on Vercel-compatible platform, set FORCE_SOCKET_SERVER=true');
     return;
   }
-  const server = createServer(async (req, res) => {
-    try {
-      const parsedUrl = parse(req.url, true);
-      await handle(req, res, parsedUrl);
-    } catch (err) {
-      console.error('Error occurred handling', req.url, err);
-      res.statusCode = 500;
-      res.end('internal server error');
-    }
-  });
+  const server = createServer();
 
   const isProduction = envConfig.NODE_ENV === 'production';
 
@@ -580,6 +572,22 @@ app.prepare().then(() => {
     };
 
     socket.on('error', handleSocketErrorServer);
+  });
+
+  // Handle Next.js requests
+  server.on('request', async (req, res) => {
+    // Let Socket.IO handle its own requests
+    if (req.url && req.url.startsWith('/socket.io')) {
+      return;
+    }
+    try {
+      const parsedUrl = parse(req.url, true);
+      await handle(req, res, parsedUrl);
+    } catch (err) {
+      console.error('Error occurred handling', req.url, err);
+      res.statusCode = 500;
+      res.end('internal server error');
+    }
   });
 
   // Cleanup stale connections every 5 minutes

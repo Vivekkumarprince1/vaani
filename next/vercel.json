@@ -1,3 +1,6 @@
 {
-  "version": 2
+  "version": 2,
+  "env": {
+    "FORCE_SOCKET_SERVER": "true"
+  }
 }

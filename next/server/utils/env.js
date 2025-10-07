@@ -41,7 +41,13 @@ const config = {
   MONGO_URI: process.env.MONGO_URI || 'mongodb://localhost:27017/vaani',
 
   // CORS Configuration
-  ALLOWED_ORIGINS: process.env.ALLOWED_ORIGINS ? process.env.ALLOWED_ORIGINS.split(',') : ['http://localhost:5173'],
+  ALLOWED_ORIGINS: (() => {
+    const origins = process.env.ALLOWED_ORIGINS ? process.env.ALLOWED_ORIGINS.split(',') : ['http://localhost:3000'];
+    if (process.env.NODE_ENV !== 'production') {
+      if (!origins.includes('http://localhost:3000')) origins.push('http://localhost:3000');
+    }
+    return origins;
+  })(),
   JWT_SECRET: process.env.JWT_SECRET || 'supersecretkey',
   JWT_EXPIRES_IN: process.env.JWT_EXPIRES_IN || '7d',
   PORT: parseInt(process.env.PORT || '3001', 10),

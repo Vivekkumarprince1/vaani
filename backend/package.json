@@ -5,6 +5,7 @@
   "scripts": {
     "dev": "node server.js",
     "start": "NODE_ENV=production node server.js",
+    "build": "echo \"No build step for backend; add build commands if you transpile or bundle (e.g. tsc, babel)\"",
     "test": "jest --runInBand --detectOpenHandles"
   },
   "dependencies": {

@@ -28,6 +28,12 @@ const useGroupCallAudioProcessing = (
   // Performance metrics for profiling group call overhead
   const currentMetricRef = useRef(null);
 
+  // TTS playback queue (per-room sequential playback to avoid overlap)
+  const ttsQueueRef = useRef([]); // array of { base64, meta }
+  const isPlayingRef = useRef(false);
+  const runnerRunningRef = useRef(false);
+  const currentAudioElRef = useRef(null);
+
   // Handle mute state changes
   useEffect(() => {
     if (isMuted) {
@@ -206,17 +212,6 @@ const useGroupCallAudioProcessing = (
         language: sourceLanguage,
         timestamp: new Date()
       }].slice(-50));
-
-      // Request server-side translation+TTS by asking the server to translate
-      // (clients no longer perform translation or TTS locally)
-      socket.emit('groupCallTranslateText', {
-        text,
-        sourceLanguage,
-        targetLanguage: currentLanguage,
-        speakerId,
-        speakerName,
-        requestId
-      });
     };
 
     // Handle translated text
@@ -242,15 +237,12 @@ const useGroupCallAudioProcessing = (
         timestamp: new Date()
       }].slice(-50));
 
-      // If audio is provided, play it using a hidden audio element
+      // If audio is provided, enqueue it for sequential playback to avoid overlaps
       if (audio) {
         try {
-          const audioBlob = b64toBlob(audio, 'audio/mpeg');
-          const url = URL.createObjectURL(audioBlob);
-          const a = new Audio(url);
-          a.play().catch(err => console.warn('Audio play failed:', err));
+          enqueueTtsAudio(audio, { speakerId, speakerName, requestId, targetLanguage });
         } catch (err) {
-          console.error('Failed to play TTS audio:', err);
+          console.error('Failed to enqueue TTS audio:', err);
         }
       }
     };
@@ -269,6 +261,8 @@ const useGroupCallAudioProcessing = (
       socket.off('groupCallOriginalText', handleOriginalText);
       socket.off('groupCallTranslatedSpeech', handleTranslatedSpeech);
       socket.off('groupCallError', handleError);
+      // stop any queued TTS playback on unmount
+      stopAndCleanupTts();
     };
   }, [socket, currentLanguage, currentUserId, callRoomId]);
 
@@ -291,6 +285,84 @@ const useGroupCallAudioProcessing = (
     }
 
     return new Blob(byteArrays, { type: contentType });
+  };
+
+  // Enqueue a base64 audio (MP3) for sequential playback
+  const enqueueTtsAudio = (base64Audio, meta = {}) => {
+    if (!base64Audio) return;
+    ttsQueueRef.current.push({ base64: base64Audio, meta });
+    // start runner if not running
+    if (!runnerRunningRef.current) {
+      runnerRunningRef.current = true;
+      runTtsQueueRunner();
+    }
+  };
+
+  // Play single audio element and wait until it ends or errors
+  const playAudioAndWait = (audioEl) => {
+    return new Promise((resolve) => {
+      const onEnded = () => {
+        try { audioEl.pause(); audioEl.src = ''; } catch (e) {}
+        audioEl.removeEventListener('ended', onEnded);
+        audioEl.removeEventListener('error', onError);
+        resolve();
+      };
+      const onError = (err) => {
+        console.warn('TTS playback error', err);
+        audioEl.removeEventListener('ended', onEnded);
+        audioEl.removeEventListener('error', onError);
+        try { audioEl.pause(); audioEl.src = ''; } catch (e) {}
+        resolve();
+      };
+      audioEl.addEventListener('ended', onEnded);
+      audioEl.addEventListener('error', onError);
+      audioEl.play().catch((err) => {
+        console.warn('TTS autoplay blocked or failed:', err);
+        onError(err);
+      });
+    });
+  };
+
+  // Runner loop that consumes the queue sequentially
+  const runTtsQueueRunner = async () => {
+    isPlayingRef.current = true;
+    while (ttsQueueRef.current.length > 0) {
+      const next = ttsQueueRef.current.shift();
+      if (!next) break;
+      const { base64, meta } = next;
+      // stop any existing audio
+      if (currentAudioElRef.current) {
+        try { currentAudioElRef.current.pause(); currentAudioElRef.current.src = ''; } catch (e) {}
+        currentAudioElRef.current = null;
+      }
+      try {
+        const audioUrl = `data:audio/mp3;base64,${base64}`;
+        const audioEl = new Audio(audioUrl);
+        currentAudioElRef.current = audioEl;
+        await playAudioAndWait(audioEl);
+        currentAudioElRef.current = null;
+      } catch (err) {
+        console.error('Error in TTS runner playback:', err);
+        currentAudioElRef.current = null;
+      }
+      // small gap between audios
+      // eslint-disable-next-line no-await-in-loop
+      await new Promise((res) => setTimeout(res, 50));
+    }
+    isPlayingRef.current = false;
+    runnerRunningRef.current = false;
+  };
+
+  // Stop and clean up queue and any playing audio
+  const stopAndCleanupTts = () => {
+    ttsQueueRef.current = [];
+    const audioEl = currentAudioElRef.current;
+    if (audioEl) {
+      try { audioEl.pause(); audioEl.src = ''; } catch (e) {}
+      currentAudioElRef.current = null;
+    }
+    isPlayingRef.current = false;
+    runnerRunningRef.current = false;
   };
 
   return {

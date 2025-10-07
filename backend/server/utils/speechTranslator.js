@@ -1,4 +1,5 @@
-// const sdk = require("microsoft-cognitiveservices-speech-sdk");
+const axios = require('axios');
+const { translateSpeechDirect } = require('./speechTranslationSDK');
 
 // // Azure Speech Service configuration
 // const SPEECH_KEY = process.env.AZURE_SPEECH_KEY;
@@ -291,15 +292,27 @@
 //  * @param {string} sourceLanguage - Source language code
 //  * @returns {Promise<string>} - Recognized text
 //  */
-// const recognizeSpeech = async (audioBuffer, sourceLanguage) => {
-//   try {
-//     const result = await speechToText(audioBuffer, sourceLanguage);
-//     return result.text || '';
-//   } catch (error) {
-//     console.error('Speech recognition error:', error);
-//     return '';
-//   }
-// };
+/**
+ * Recognize speech (voice-to-text) using the optimized Speech Translation SDK
+ * Falls back to returning empty string on error
+ */
+const recognizeSpeech = async (audioBuffer, sourceLanguage) => {
+	try {
+		if (!audioBuffer) return '';
+		// Use translateSpeechDirect with same source and target to get original transcription
+		const src = sourceLanguage || 'en';
+		try {
+			const result = await translateSpeechDirect(audioBuffer, src, src);
+			return (result && result.original) ? result.original : '';
+		} catch (err) {
+			console.warn('translateSpeechDirect failed in recognizeSpeech, falling back:', err && err.message);
+			return '';
+		}
+	} catch (error) {
+		console.error('Speech recognition error:', error);
+		return '';
+	}
+};
 
 // /**
 //  * ✅ USED IN YOUR WORKFLOW - Translate text only (no audio)
@@ -310,24 +323,54 @@
 //  * @param {string} targetLanguage - Target language code
 //  * @returns {Promise<string>} - Translated text
 //  */
-// const translateTextOnly = async (text, sourceLanguage, targetLanguage) => {
-//   try {
-//     // translateText returns a string (translated text) or '' on error
-//     const translated = await translateText(text, sourceLanguage, targetLanguage);
-//     return translated || '';
-//   } catch (error) {
-//     console.error('Text translation error:', error);
-//     return '';
-//   }
-// };
+/**
+ * Translate text using Azure Translator REST API if configured.
+ * Falls back to returning original text when translator not configured.
+ */
+const translateTextOnly = async (text, sourceLanguage, targetLanguage) => {
+	try {
+		if (!text || !text.trim()) return '';
 
-// module.exports = {
-//   // ✅ USED IN YOUR WORKFLOW
-//   recognizeSpeech,        // Speech-to-text (voice recognition)
-//   translateText: translateTextOnly,  // Text translation
-//   normalizeLanguage,      // Language code normalization
-  
-//   // ✅ USED IN YOUR WORKFLOW (text-only pipeline)
-//   translateSpeech,        // Full pipeline (STT + Translation - no TTS)
-//   speechToText           // Raw speech-to-text function
-// };
+		const TRANSLATOR_KEY = process.env.AZURE_TRANSLATOR_KEY;
+		const TRANSLATOR_REGION = process.env.AZURE_TRANSLATOR_REGION;
+		const TRANSLATOR_ENDPOINT = process.env.AZURE_TRANSLATOR_ENDPOINT || 'https://api.cognitive.microsofttranslator.com';
+
+		const sourceCode = sourceLanguage ? sourceLanguage.split('-')[0] : undefined;
+		const targetCode = targetLanguage ? targetLanguage.split('-')[0] : undefined;
+
+		if (!TRANSLATOR_KEY || !targetCode) {
+			// No translator configured or target not provided — return original text
+			return text;
+		}
+
+		const url = `${TRANSLATOR_ENDPOINT}/translate`;
+		const params = {
+			'api-version': '3.0',
+			to: targetCode
+		};
+		if (sourceCode) params.from = sourceCode;
+
+		const response = await axios.post(url, [{ Text: text }], {
+			params,
+			headers: {
+				'Ocp-Apim-Subscription-Key': TRANSLATOR_KEY,
+				'Ocp-Apim-Subscription-Region': TRANSLATOR_REGION || '',
+				'Content-Type': 'application/json'
+			},
+			timeout: 4000
+		});
+
+		const translated = (response.data && response.data[0] && response.data[0].translations && response.data[0].translations[0] && response.data[0].translations[0].text) || '';
+		return translated || text;
+	} catch (error) {
+		console.error('Text translation error:', error && error.message);
+		return text;
+	}
+};
+
+module.exports = {
+	recognizeSpeech,
+	translateText: translateTextOnly,
+	// keep older helpers (if present) as no-op fallbacks
+	normalizeLanguage: (l) => (typeof l === 'string' ? l : 'en'),
+};

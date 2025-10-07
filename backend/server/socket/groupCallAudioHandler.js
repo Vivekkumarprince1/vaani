@@ -175,43 +175,83 @@ const handleGroupCallAudioTranslation = (io, socket, users) => {
             langMap.get(lang).push(participantSocket);
           }
 
-          // For each language, determine translated text (from multiResult if available) and synthesize once
+          // For each language, determine translated text and synthesize concurrently
+          // We'll generate all TTS in parallel, wait for them, then emit all payloads
+          // so clients receive audio at nearly the same time.
+          const entries = []; // { lang, socketsForLang, promise }
           for (const [lang, socketsForLang] of langMap.entries()) {
-            let finalText = recognizedText;
-            try {
-              if (multiResult && multiResult.translations && multiResult.translations[lang]) {
-                finalText = multiResult.translations[lang];
-              } else if (lang !== (preferredSpeakerLanguage || 'en').split('-')[0]) {
-                // Fallback to single translation
-                const translated = await translateText(recognizedText, preferredSpeakerLanguage, lang);
-                if (translated) finalText = translated;
+            const promise = (async () => {
+              let finalText = recognizedText;
+              try {
+                if (multiResult && multiResult.translations && multiResult.translations[lang]) {
+                  finalText = multiResult.translations[lang];
+                } else if (lang !== (preferredSpeakerLanguage || 'en').split('-')[0]) {
+                  // Fallback to single translation
+                  const translated = await translateText(recognizedText, preferredSpeakerLanguage, lang);
+                  if (translated) finalText = translated;
+                }
+              } catch (tErr) {
+                console.error('Translation error for language', lang, tErr);
               }
-            } catch (tErr) {
-              console.error('Translation error for language', lang, tErr);
+
+              // Use cached synthesize helper when available to reduce duplicate work
+              const { getCachedOrSynthesize } = require('../../server/utils/textToSpeechModule');
+
+              let ttsBuffer = null;
+              try {
+                ttsBuffer = await getCachedOrSynthesize(finalText, lang);
+              } catch (ttsErr) {
+                console.error('TTS error for language', lang, ttsErr);
+              }
+
+              const audioBase64 = ttsBuffer ? ttsBuffer.toString('base64') : null;
+              return { lang, finalText, audioBase64 };
+            })();
+
+            entries.push({ lang, socketsForLang, promise });
+          }
+
+          // Wait for all TTS promises to settle
+          const settled = await Promise.allSettled(entries.map(e => e.promise));
+
+          // After all TTS are generated (or attempted), emit payloads in a tight loop
+          for (let i = 0; i < entries.length; i++) {
+            const { lang, socketsForLang } = entries[i];
+            const res = settled[i];
+            if (res.status !== 'fulfilled') {
+              console.warn('TTS generation failed for language', lang, res.reason || res);
+              // Still emit text-only payload to participants for UI fallback
+              for (const pSocket of socketsForLang) {
+                pSocket.emit('groupCallTranslatedSpeech', {
+                  originalText: recognizedText,
+                  translatedText: recognizedText,
+                  audio: null,
+                  sourceLanguage: preferredSpeakerLanguage,
+                  targetLanguage: lang,
+                  speakerId,
+                  speakerName,
+                  requestId
+                });
+              }
+              continue;
             }
 
-            // Synthesize once per language
-            let ttsBuffer = null;
-            try {
-              ttsBuffer = await textToSpeech(finalText, lang);
-            } catch (ttsErr) {
-              console.error('TTS error for language', lang, ttsErr);
-            }
-
-            const audioBase64 = ttsBuffer ? ttsBuffer.toString('base64') : null;
-
-            // Broadcast to all participants in this language group
+            const { finalText, audioBase64 } = res.value || { finalText: recognizedText, audioBase64: null };
             for (const pSocket of socketsForLang) {
-              pSocket.emit('groupCallTranslatedSpeech', {
-                originalText: recognizedText,
-                translatedText: finalText,
-                audio: audioBase64,
-                sourceLanguage: preferredSpeakerLanguage,
-                targetLanguage: lang,
-                speakerId,
-                speakerName,
-                requestId
-              });
+              try {
+                pSocket.emit('groupCallTranslatedSpeech', {
+                  originalText: recognizedText,
+                  translatedText: finalText,
+                  audio: audioBase64,
+                  sourceLanguage: preferredSpeakerLanguage,
+                  targetLanguage: lang,
+                  speakerId,
+                  speakerName,
+                  requestId
+                });
+              } catch (emitErr) {
+                console.warn('Failed to emit translated speech to socket', pSocket.id, emitErr);
+              }
             }
           }
 

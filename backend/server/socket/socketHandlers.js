@@ -143,14 +143,24 @@ module.exports = (io, users, rooms, findUserByUserId) => {
 
       if (roomId) {
         // Group call - notify all room members except sender
-        socket.to(roomId).emit('incomingCall', {
-          from: userId,
-          fromName: socket.user.username,
-          offer,
-          callType,
-          roomId
-        });
-        console.log(`📤 Sent group call notification to room ${roomId}`);
+        (async () => {
+          try {
+            const socketsInRoom = await io.in(roomId).fetchSockets();
+            console.log(`📤 Emitting incomingCall to ${socketsInRoom.length - 1} peers in room ${roomId}`);
+            for (const s of socketsInRoom) {
+              if (s.id === socket.id) continue;
+              io.to(s.id).emit('incomingCall', {
+                from: userId,
+                fromName: socket.user.username,
+                offer,
+                callType,
+                roomId
+              });
+            }
+          } catch (err) {
+            console.error('Error emitting incomingCall to room:', err);
+          }
+        })();
       } else {
         // Private call
         const toUser = findUserByUserId(to);

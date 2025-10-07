@@ -8,12 +8,23 @@ const handleAudioTranslation = require('./server/socket/audioHandler');
 const handleGroupCallAudioTranslation = require('./server/socket/groupCallAudioHandler');
 const socketHandlers = require('./server/socket/socketHandlers');
 
-// Log Azure credentials to verify they're loaded
+// Validate Azure env and expose TTS availability
+const { config: envConfig } = require('./server/utils/env');
+const ttsAvailable = Boolean(envConfig.AZURE_SPEECH_KEY && envConfig.AZURE_SPEECH_REGION);
+global.__TTS_AVAILABLE = ttsAvailable;
+
 console.log('🔑 Azure Configuration:');
-console.log('  AZURE_SPEECH_KEY:', process.env.AZURE_SPEECH_KEY ? '✅ Loaded' : '❌ Missing');
-console.log('  AZURE_SPEECH_REGION:', process.env.AZURE_SPEECH_REGION || '❌ Missing');
+console.log('  AZURE_SPEECH_KEY:', envConfig.AZURE_SPEECH_KEY ? '✅ Loaded' : '❌ Missing');
+console.log('  AZURE_SPEECH_REGION:', envConfig.AZURE_SPEECH_REGION ? '✅ Loaded' : '❌ Missing');
 console.log('  AZURE_TRANSLATOR_KEY:', process.env.AZURE_TRANSLATOR_KEY ? '✅ Loaded' : '❌ Missing');
-console.log('  AZURE_TRANSLATOR_REGION:', process.env.AZURE_TRANSLATOR_REGION || '❌ Missing');
+console.log('  AZURE_TRANSLATOR_REGION:', process.env.AZURE_TRANSLATOR_REGION ? '✅ Loaded' : '❌ Missing');
+
+if (!ttsAvailable) {
+  console.warn('\n⚠️ Text-to-Speech is NOT available. Group-call TTS will be skipped and clients will receive text-only translations.');
+  console.warn('   Set AZURE_SPEECH_KEY and AZURE_SPEECH_REGION in your environment or .env to enable server TTS.\n');
+} else {
+  console.log('\n✅ Text-to-Speech is available and will be used for translated audio in group calls.');
+}
 
 const port = parseInt(process.env.PORT || '3001', 10); // Different port for backend
 

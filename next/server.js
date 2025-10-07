@@ -1,12 +1,6 @@
-// Load local environment variables only in development so Render/production uses the platform's env vars
+// Load environment variables from .env file in development
 if (process.env.NODE_ENV !== 'production') {
-  // In local/dev runs we load .env.local for convenience
-  try {
-    require('dotenv').config({ path: '.env.local' });
-    console.log('Loaded .env.local for development');
-  } catch (e) {
-    console.warn('Could not load .env.local:', e && e.message);
-  }
+  require('dotenv').config();
 }
 
 const { createServer } = require('http');
@@ -17,12 +11,18 @@ const jwt = require('jsonwebtoken');
 const handleAudioTranslation = require('./server/socket/audioHandler');
 const handleGroupCallAudioTranslation = require('./server/socket/groupCallAudioHandler');
 
-// Log Azure credentials to verify they're loaded
+// Log to env verify they're loaded
 console.log('🔑 Azure Configuration:');
 console.log('  AZURE_SPEECH_KEY:', process.env.AZURE_SPEECH_KEY ? '✅ Loaded' : '❌ Missing');
 console.log('  AZURE_SPEECH_REGION:', process.env.AZURE_SPEECH_REGION || '❌ Missing');
 console.log('  AZURE_TRANSLATOR_KEY:', process.env.AZURE_TRANSLATOR_KEY ? '✅ Loaded' : '❌ Missing');
 console.log('  AZURE_TRANSLATOR_REGION:', process.env.AZURE_TRANSLATOR_REGION || '❌ Missing');
+console.log('  JWT_SECRET:', process.env.JWT_SECRET ? '✅ Loaded' : '❌ Missing');
+console.log('NODE_STATUS:',process.env.NODE_ENV);
+console.log('CORS_ORIGIN:', process.env.CORS_ORIGIN);
+console.log('NEXT_PUBLIC_SOCKET_URL: ',process.env.NEXT_PUBLIC_SOCKET_URL);
+console.log('NEXT_PUBLIC_API_URL: ',process.env.NEXT_PUBLIC_API_URL);
+
 
 const dev = process.env.NODE_ENV !== 'production';
 const port = parseInt(process.env.PORT || '3000', 10);
@@ -64,17 +64,13 @@ app.prepare().then(() => {
 
   const isProduction = process.env.NODE_ENV === 'production';
 
+  console.log('Allowed CORS origins:', process.env.CORS_ORIGIN);
+
   // Initialize Socket.IO with OPTIMIZED settings for low latency
   const io = new Server(server, {
     path: '/socket.io',
-
-
     cors: {
-      origin: process.env.CORS_ORIGIN ? process.env.CORS_ORIGIN.split(',') : (isProduction ? [
-        'https://vaani-ivory.vercel.app' // Replace with your actual production domain
-      ] : [
-        'http://localhost:3000'
-      ]),
+      origin: process.env.CORS_ORIGIN ,
       methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
       credentials: true,
       allowedHeaders: ['Content-Type', 'Authorization', 'x-auth-token']

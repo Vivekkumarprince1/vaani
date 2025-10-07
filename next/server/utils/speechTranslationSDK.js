@@ -2,8 +2,6 @@ const sdk = require('microsoft-cognitiveservices-speech-sdk');
 const { config, requireEnv } = require('./env');
 const { retry } = require('./retry');
 const cache = require('./translationCache');
-const pLimitModule = require('p-limit');
-const pLimit = (pLimitModule && pLimitModule.default) ? pLimitModule.default : pLimitModule;
 
 // Ensure required envs are present when this module is used
 const SPEECH_KEY = requireEnv('AZURE_SPEECH_KEY');
@@ -74,9 +72,6 @@ function getTranslationConfig(sourceLocale, targetLangCodes = []) {
   configPool.set(key, c);
   return c;
 }
-
-// TTS concurrency limiter (batching)
-const ttsLimit = pLimit(config.TTS_CONCURRENCY || 4);
 
 // Helper to create a small stable key for cache
 function makeCacheKey(prefix, data) {

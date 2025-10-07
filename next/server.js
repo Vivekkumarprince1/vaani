@@ -57,7 +57,7 @@ app.prepare().then(() => {
   const io = new Server(server, {
     path: '/socket.io',
     cors: {
-      origin: envConfig.ALLOWED_ORIGINS,
+      origin: isProduction ? envConfig.ALLOWED_ORIGINS : true, // Allow any origin in development
       methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
       credentials: true,
       allowedHeaders: ['Content-Type', 'Authorization', 'x-auth-token']

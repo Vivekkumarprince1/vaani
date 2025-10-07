@@ -9,7 +9,9 @@ class SocketManager {
   constructor() {
     this.socket = null;
     this.token = null;
-    this.baseUrl = (typeof window !== 'undefined' ? window.location.origin : 'http://localhost:3000');
+    console.log('->NEXT_PUBLIC_SOCKET_URL:', process.env.NEXT_PUBLIC_SOCKET_URL);
+    // Use NEXT_PUBLIC_SOCKET_URL if defined, otherwise default to current origin in browser or localhost in non-browser    
+    this.baseUrl = process.env.NEXT_PUBLIC_SOCKET_URL || (typeof window !== 'undefined' ? window.location.origin : 'http://localhost:3000');
   // event -> Set of handlers
   this.eventHandlers = new Map();
     this.isConnected = false;

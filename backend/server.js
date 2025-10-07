@@ -30,7 +30,7 @@ const port = parseInt(process.env.PORT || '3001', 10); // Different port for bac
 
 const app = express();
 app.use(cors({
-  origin: process.env.NEXT_PUBLIC_CLIENT_URL || 'http://localhost:3000',
+  origin: 'https://vaani-frontend-rose.vercel.app' || 'http://localhost:3000',
   credentials: true
 }));
 app.use(express.json());
@@ -60,7 +60,7 @@ const findUserByUserId = (userId) => {
 const io = new Server(server, {
   path: '/socket.io',
   cors: {
-    origin: process.env.NEXT_PUBLIC_CLIENT_URL || `http://localhost:3000`,
+    origin: 'https://vaani-frontend-rose.vercel.app' || `http://localhost:3000`,
     methods: ['GET', 'POST', 'PUT', 'DELETE'],
     credentials: true,
     allowedHeaders: ['Content-Type', 'Authorization', 'x-auth-token']

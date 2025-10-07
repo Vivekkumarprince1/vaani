@@ -16,8 +16,10 @@ global.__TTS_AVAILABLE = ttsAvailable;
 console.log('🔑 Azure Configuration:');
 console.log('  AZURE_SPEECH_KEY:', envConfig.AZURE_SPEECH_KEY ? '✅ Loaded' : '❌ Missing');
 console.log('  AZURE_SPEECH_REGION:', envConfig.AZURE_SPEECH_REGION ? '✅ Loaded' : '❌ Missing');
-console.log('  AZURE_TRANSLATOR_KEY:', process.env.AZURE_TRANSLATOR_KEY ? '✅ Loaded' : '❌ Missing');
-console.log('  AZURE_TRANSLATOR_REGION:', process.env.AZURE_TRANSLATOR_REGION ? '✅ Loaded' : '❌ Missing');
+console.log('  AZURE_TRANSLATOR_KEY:', envConfig.AZURE_TRANSLATOR_KEY ? '✅ Loaded' : '❌ Missing');
+console.log('  AZURE_TRANSLATOR_REGION:', envConfig.AZURE_TRANSLATOR_REGION ? '✅ Loaded' : '❌ Missing');
+console.log('  JWT_SECRET:', envConfig.JWT_SECRET ? '✅ Loaded' : '❌ Missing');
+
 
 if (!ttsAvailable) {
   console.warn('\n⚠️ Text-to-Speech is NOT available. Group-call TTS will be skipped and clients will receive text-only translations.');
@@ -30,7 +32,7 @@ const port = parseInt(process.env.PORT || '3001', 10); // Different port for bac
 
 const app = express();
 app.use(cors({
-  origin: true,
+  origin: envConfig.ALLOWED_ORIGINS,
   credentials: true
 }));
 app.use(express.json());
@@ -60,7 +62,7 @@ const findUserByUserId = (userId) => {
 const io = new Server(server, {
   path: '/socket.io',
   cors: {
-    origin: true,
+    origin: envConfig.ALLOWED_ORIGINS,
     methods: ['GET', 'POST', 'PUT', 'DELETE'],
     credentials: true,
     allowedHeaders: ['Content-Type', 'Authorization', 'x-auth-token']

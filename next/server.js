@@ -1,7 +1,4 @@
-// Load environment variables from .env file in development
-if (process.env.NODE_ENV !== 'production') {
-  require('dotenv').config();
-}
+const { config: envConfig } = require('./server/utils/env');
 
 const { createServer } = require('http');
 const { parse } = require('url');
@@ -13,19 +10,18 @@ const handleGroupCallAudioTranslation = require('./server/socket/groupCallAudioH
 
 // Log to env verify they're loaded
 console.log('🔑 Azure Configuration:');
-console.log('  AZURE_SPEECH_KEY:', process.env.AZURE_SPEECH_KEY ? '✅ Loaded' : '❌ Missing');
-console.log('  AZURE_SPEECH_REGION:', process.env.AZURE_SPEECH_REGION || '❌ Missing');
-console.log('  AZURE_TRANSLATOR_KEY:', process.env.AZURE_TRANSLATOR_KEY ? '✅ Loaded' : '❌ Missing');
-console.log('  AZURE_TRANSLATOR_REGION:', process.env.AZURE_TRANSLATOR_REGION || '❌ Missing');
-console.log('  JWT_SECRET:', process.env.JWT_SECRET ? '✅ Loaded' : '❌ Missing');
-console.log('NODE_STATUS:',process.env.NODE_ENV);
-console.log('CORS_ORIGIN:', process.env.CORS_ORIGIN);
-console.log('NEXT_PUBLIC_SOCKET_URL: ',process.env.NEXT_PUBLIC_SOCKET_URL);
-console.log('NEXT_PUBLIC_API_URL: ',process.env.NEXT_PUBLIC_API_URL);
+console.log('  AZURE_SPEECH_KEY:', envConfig.AZURE_SPEECH_KEY ? '✅ Loaded' : '❌ Missing');
+console.log('  AZURE_SPEECH_REGION:', envConfig.AZURE_SPEECH_REGION || '❌ Missing');
+console.log('  AZURE_TRANSLATOR_KEY:', envConfig.AZURE_TRANSLATOR_KEY ? '✅ Loaded' : '❌ Missing');
+console.log('  AZURE_TRANSLATOR_REGION:', envConfig.AZURE_TRANSLATOR_REGION || '❌ Missing');
+console.log('  JWT_SECRET:', envConfig.JWT_SECRET ? '✅ Loaded' : '❌ Missing');
+console.log('NODE_STATUS:',envConfig.NODE_ENV);
+console.log('ALLOWED_ORIGINS:',envConfig.ALLOWED_ORIGINS);
 
 
-const dev = process.env.NODE_ENV !== 'production';
-const port = parseInt(process.env.PORT || '3000', 10);
+
+const dev = envConfig.NODE_ENV !== 'production';
+const port = parseInt(envConfig.PORT || '3000', 10);
 
 // Initialize Next.js. Do not force a hostname here so the HTTP server can bind to 0.0.0.0
 const app = next({ dev });
@@ -62,15 +58,14 @@ app.prepare().then(() => {
     }
   });
 
-  const isProduction = process.env.NODE_ENV === 'production';
+  const isProduction = envConfig.NODE_ENV === 'production';
 
-  console.log('Allowed CORS origins:', process.env.CORS_ORIGIN);
 
   // Initialize Socket.IO with OPTIMIZED settings for low latency
   const io = new Server(server, {
     path: '/socket.io',
     cors: {
-      origin: process.env.CORS_ORIGIN ,
+      origin: envConfig.ALLOWED_ORIGINS,
       methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
       credentials: true,
       allowedHeaders: ['Content-Type', 'Authorization', 'x-auth-token']
@@ -113,7 +108,7 @@ app.prepare().then(() => {
     }
 
     try {
-      const decoded = jwt.verify(token, process.env.JWT_SECRET);
+      const decoded = jwt.verify(token, envConfig.JWT_SECRET);
       socket.user = decoded;
       // console.log('Socket authenticated for user:', decoded.userId);
       next();

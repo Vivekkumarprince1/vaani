@@ -1,0 +1,48 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Next: build (production)",
+      "type": "shell",
+      "command": "npm run build",
+      "group": "build",
+      "presentation": {
+        "echo": true,
+        "reveal": "always",
+        "focus": false
+      }
+    },
+    {
+      "label": "Vercel: login",
+      "type": "shell",
+      "command": "vercel login",
+      "presentation": {
+        "echo": true,
+        "reveal": "always",
+        "focus": true
+      }
+    },
+    {
+      "label": "Vercel: deploy (preview)",
+      "type": "shell",
+      "command": "vercel",
+      "dependsOn": ["Next: build (production)"],
+      "presentation": {
+        "echo": true,
+        "reveal": "always",
+        "focus": false
+      }
+    },
+    {
+      "label": "Vercel: deploy (production)",
+      "type": "shell",
+      "command": "vercel --prod",
+      "dependsOn": ["Next: build (production)"],
+      "presentation": {
+        "echo": true,
+        "reveal": "always",
+        "focus": false
+      }
+    }
+  ]
+}

@@ -46,8 +46,9 @@ app.prepare().then(() => {
   // long-lived socket servers started from within the deployment. In that
   // case, the frontend will be deployed to Vercel and the socket server
   // should be deployed separately (see DEPLOYMENT.md).
-  if (process.env.VERCEL) {
+  if (process.env.VERCEL && !process.env.FORCE_SOCKET_SERVER) {
     console.log('Detected VERCEL environment; skipping custom server startup.');
+    console.log('To run Socket.IO server on Vercel-compatible platform, set FORCE_SOCKET_SERVER=true');
     return;
   }
   const server = createServer(async (req, res) => {
@@ -74,10 +75,15 @@ cors: {
       // ✅ Allow all in development
       callback(null, true);
     } else {
-      const allowedOrigins = [
-        'https://vaani-lq1ltpah6-vivek-kumars-projects-129c22bf.vercel.app',
-        'https://www.vaani.app'
-      ] || process.env.ALLOW_ORIGIN;
+      // Use environment variable for allowed origins, fallback to common ones
+      const allowedOrigins = process.env.ALLOW_ORIGIN ?
+        process.env.ALLOW_ORIGIN.split(',') :
+        [
+          'https://vaani-lq1ltpah6-vivek-kumars-projects-129c22bf.vercel.app',
+          'https://vaani-ivory.vercel.app',
+          'https://vaani-ivory.vercel.app/dashboard'
+        ];
+
       if (!origin || allowedOrigins.includes(origin)) {
         callback(null, true);
       } else {

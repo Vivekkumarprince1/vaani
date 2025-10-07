@@ -62,35 +62,39 @@ app.prepare().then(() => {
     }
   });
 
-      const isProduction = process.env.NODE_ENV === 'production';
+  const isProduction = process.env.NODE_ENV === 'production';
 
   // Initialize Socket.IO with OPTIMIZED settings for low latency
   const io = new Server(server, {
     path: '/socket.io',
 
 
-cors: {
-  origin: 'https://vaani-ivory.vercel.app',
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  credentials: true,
-  allowedHeaders: ['Content-Type', 'Authorization', 'x-auth-token']
-},
+    cors: {
+      origin: process.env.CORS_ORIGIN ? process.env.CORS_ORIGIN.split(',') : (isProduction ? [
+        'https://vaani-ivory.vercel.app' // Replace with your actual production domain
+      ] : [
+        'http://localhost:3000'
+      ]),
+      methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+      credentials: true,
+      allowedHeaders: ['Content-Type', 'Authorization', 'x-auth-token']
+    },
 
     // ✅ OPTIMIZED: Allow both transports but prefer WebSocket
     transports: ['websocket', 'polling'],
     allowUpgrades: true, // Allow upgrade from polling to WebSocket
     upgradeTimeout: 10000,
-    
+
     // ✅ OPTIMIZED: Reduce ping intervals for faster connection checks
     pingTimeout: 60000,
     pingInterval: 25000,
-    
+
     // ✅ OPTIMIZED: Increase buffer for larger audio payloads
     maxHttpBufferSize: 1e7, // 10MB (was 5MB)
-    
+
     // ✅ OPTIMIZED: Disable compression for speed (trade bandwidth for latency)
     perMessageDeflate: false, // Compression adds latency
-    
+
     connectTimeout: 30000,
     serveClient: false
   });
@@ -106,12 +110,12 @@ cors: {
   // Socket.IO authentication middleware
   io.use((socket, next) => {
     const token = socket.handshake.auth?.token || socket.handshake.headers?.authorization?.split(' ')[1];
-    
+
     if (!token) {
       console.error('No token provided for socket connection');
       return next(new Error('Authentication error: No token provided'));
     }
-    
+
     try {
       const decoded = jwt.verify(token, process.env.JWT_SECRET);
       socket.user = decoded;
@@ -130,7 +134,7 @@ cors: {
 
     const userId = socket.user.userId;
     const username = socket.user.username || socket.user.user?.username || 'Unknown';
-    
+
     // Clean up any existing connections for this userId (handle multiple devices/tabs)
     Object.keys(users).forEach(sid => {
       if (users[sid].userId === userId && sid !== socket.id) {
@@ -138,7 +142,7 @@ cors: {
         delete users[sid];
       }
     });
-    
+
     // Store user connection - KEY BY SOCKET ID for proper lookup in audio handler
     users[socket.id] = {
       socketId: socket.id,
@@ -169,7 +173,7 @@ cors: {
         users[socket.id].preferredLanguage = language;
         // const username = users[socket.id].username || 'Unknown';
         // console.log(`📝 Updated language preference: socketId=${socket.id}, userId=${userId}, username=${username}, language=${language}`);
-        
+
         // Log all users and their languages for debugging
         // console.log('📋 All users with languages:', Object.keys(users).map(sid => ({
         //   socketId: sid.substring(0, 8) + '...',
@@ -177,7 +181,7 @@ cors: {
         //   username: users[sid].username,
         //   language: users[sid].preferredLanguage
         // })));
-        
+
         // Confirm update to client
         socket.emit('languagePreferenceUpdated', {
           language,
@@ -190,12 +194,12 @@ cors: {
     socket.on('joinRoom', (roomId) => {
       socket.join(roomId);
       console.log(`User ${userId} joined room ${roomId}`);
-      
+
       if (!rooms[roomId]) {
         rooms[roomId] = new Set();
       }
       rooms[roomId].add(userId);
-      
+
       socket.to(roomId).emit('userJoinedRoom', {
         userId,
         username: socket.user.username,
@@ -207,14 +211,14 @@ cors: {
     socket.on('leaveRoom', (roomId) => {
       socket.leave(roomId);
       console.log(`User ${userId} left room ${roomId}`);
-      
+
       if (rooms[roomId]) {
         rooms[roomId].delete(userId);
         if (rooms[roomId].size === 0) {
           delete rooms[roomId];
         }
       }
-      
+
       socket.to(roomId).emit('userLeftRoom', {
         userId,
         username: socket.user.username,
@@ -228,7 +232,7 @@ cors: {
     // Handle private messages
     socket.on('sendMessage', async (data) => {
       const { receiverId, content, roomId } = data;
-      
+
       const message = {
         senderId: userId,
         senderName: socket.user.username,
@@ -247,7 +251,7 @@ cors: {
         // Room message
         socket.to(roomId).emit('receiveMessage', message);
       }
-      
+
       // Send confirmation back to sender
       socket.emit('messageSent', { success: true, message });
     });
@@ -255,7 +259,7 @@ cors: {
     // Handle typing indicator
     socket.on('typing', (data) => {
       const { receiverId, roomId, isTyping } = data;
-      
+
       if (receiverId) {
         const receiverUser = findUserByUserId(receiverId);
         if (receiverUser) {
@@ -278,7 +282,7 @@ cors: {
     socket.on('callUser', (data) => {
       const { to, offer, callType, roomId } = data;
       console.log(`📞 Call initiated: from=${userId} to=${to}, callType=${callType}, roomId=${roomId}`);
-      
+
       if (roomId) {
         // Group call - notify all room members except sender
         socket.to(roomId).emit('incomingCall', {
@@ -297,30 +301,30 @@ cors: {
           // Ensure the socketId is still connected in Socket.IO
           const targetSocket = io.sockets.sockets.get(toUser.socketId);
           if (targetSocket) {
-              console.log(`\u2705 Receiver found: socketId=${toUser.socketId}, status=${toUser.status}`);
-              // Debug: list active socket ids and verify presence
-              try {
-                const activeIds = Array.from(io.sockets.sockets.keys());
-                console.log('Active socket IDs count:', activeIds.length, 'sample:', activeIds.slice(0,10));
-                console.log('Target socket present via sockets.get:', !!io.sockets.sockets.get(toUser.socketId));
-              } catch (dbgErr) {
-                console.warn('Error enumerating sockets for debug:', dbgErr);
-              }
+            console.log(`\u2705 Receiver found: socketId=${toUser.socketId}, status=${toUser.status}`);
+            // Debug: list active socket ids and verify presence
+            try {
+              const activeIds = Array.from(io.sockets.sockets.keys());
+              console.log('Active socket IDs count:', activeIds.length, 'sample:', activeIds.slice(0, 10));
+              console.log('Target socket present via sockets.get:', !!io.sockets.sockets.get(toUser.socketId));
+            } catch (dbgErr) {
+              console.warn('Error enumerating sockets for debug:', dbgErr);
+            }
 
-              io.to(toUser.socketId).emit('incomingCall', {
-                from: userId,
-                fromName: socket.user.username,
-                offer,
-                callType
-              });
-              console.log(`\ud83d\udce4 Sent incomingCall event to ${toUser.socketId}`);
-              // Inform caller that the incomingCall was delivered to the target socket
-              try {
-                socket.emit('incomingCallDelivered', { to, socketId: toUser.socketId });
-              } catch (ackErr) {
-                console.warn('Failed to emit incomingCallDelivered ack to caller:', ackErr);
-              }
-            } else {
+            io.to(toUser.socketId).emit('incomingCall', {
+              from: userId,
+              fromName: socket.user.username,
+              offer,
+              callType
+            });
+            console.log(`\ud83d\udce4 Sent incomingCall event to ${toUser.socketId}`);
+            // Inform caller that the incomingCall was delivered to the target socket
+            try {
+              socket.emit('incomingCallDelivered', { to, socketId: toUser.socketId });
+            } catch (ackErr) {
+              console.warn('Failed to emit incomingCallDelivered ack to caller:', ackErr);
+            }
+          } else {
             // Stale entry -- remove it so future lookups won't return this socket
             console.log(`\u274c Receiver socket not connected for userId: ${to} (stale socketId=${toUser.socketId}). Removing stale entry.`);
             delete users[toUser.socketId];
@@ -340,7 +344,7 @@ cors: {
 
     socket.on('answerCall', (data) => {
       const { to, answer, roomId } = data;
-      
+
       if (roomId) {
         // Group call answer - broadcast to room
         socket.to(roomId).emit('callAnswered', {
@@ -351,7 +355,7 @@ cors: {
       } else {
         // Private call answer
         const toUser = findUserByUserId(to);
-        
+
         if (toUser) {
           io.to(toUser.socketId).emit('callAnswered', {
             from: userId,
@@ -363,7 +367,7 @@ cors: {
 
     socket.on('iceCandidate', (data) => {
       const { to, candidate, roomId } = data;
-      
+
       if (roomId) {
         // Group call ICE candidate - broadcast to room
         socket.to(roomId).emit('iceCandidate', {
@@ -374,7 +378,7 @@ cors: {
       } else {
         // Private call ICE candidate
         const toUser = findUserByUserId(to);
-        
+
         if (toUser) {
           io.to(toUser.socketId).emit('iceCandidate', {
             from: userId,
@@ -400,7 +404,7 @@ cors: {
 
     socket.on('endCall', (data) => {
       const { to, roomId } = data;
-      
+
       if (roomId) {
         // Group call end - notify room
         socket.to(roomId).emit('callEnded', {
@@ -410,7 +414,7 @@ cors: {
       } else {
         // Private call end
         const toUser = findUserByUserId(to);
-        
+
         if (toUser) {
           io.to(toUser.socketId).emit('callEnded', {
             from: userId
@@ -420,21 +424,21 @@ cors: {
     });
 
     // ==================== GROUP CALL SIGNALING ====================
-    
+
     // Join group call room
     socket.on('joinGroupCall', (data) => {
       const { callRoomId, userId: joinUserId } = data;
       console.log(`👥 User ${joinUserId || userId} joining group call room: ${callRoomId}`);
-      
+
       socket.join(callRoomId);
-      
+
       // Notify others in the call room
       socket.to(callRoomId).emit('userJoinedGroupCall', {
         userId: joinUserId || userId,
         username: socket.user.username,
         socketId: socket.id
       });
-      
+
       // Send back list of existing participants
       io.in(callRoomId).allSockets().then(sockets => {
         const participants = Array.from(sockets)
@@ -445,7 +449,7 @@ cors: {
             username: users[sid]?.username
           }))
           .filter(p => p.userId); // Remove any undefined users
-        
+
         socket.emit('existingParticipants', {
           callRoomId,
           participants
@@ -457,9 +461,9 @@ cors: {
     socket.on('leaveGroupCall', (data) => {
       const { callRoomId } = data;
       console.log(`👥 User ${userId} leaving group call room: ${callRoomId}`);
-      
+
       socket.leave(callRoomId);
-      
+
       // Notify others in the call room
       socket.to(callRoomId).emit('userLeftGroupCall', {
         userId,
@@ -472,7 +476,7 @@ cors: {
     socket.on('groupCallOffer', (data) => {
       const { callRoomId, targetSocketId, offer } = data;
       console.log(`📞 Group call offer: from=${socket.id} to=${targetSocketId}`);
-      
+
       io.to(targetSocketId).emit('groupCallOffer', {
         fromSocketId: socket.id,
         fromUserId: userId,
@@ -486,7 +490,7 @@ cors: {
     socket.on('groupCallAnswer', (data) => {
       const { callRoomId, targetSocketId, answer } = data;
       console.log(`✅ Group call answer: from=${socket.id} to=${targetSocketId}`);
-      
+
       io.to(targetSocketId).emit('groupCallAnswer', {
         fromSocketId: socket.id,
         fromUserId: userId,
@@ -499,7 +503,7 @@ cors: {
     // Group call ICE candidate
     socket.on('groupCallIceCandidate', (data) => {
       const { callRoomId, targetSocketId, candidate } = data;
-      
+
       io.to(targetSocketId).emit('groupCallIceCandidate', {
         fromSocketId: socket.id,
         fromUserId: userId,
@@ -511,7 +515,7 @@ cors: {
     // Group call speaking event (for translation/transcription)
     socket.on('groupCallSpeaking', (data) => {
       const { callRoomId, isSpeaking } = data;
-      
+
       socket.to(callRoomId).emit('participantSpeaking', {
         userId,
         username: socket.user.username,
@@ -524,26 +528,26 @@ cors: {
     // Handle disconnect
     socket.on('disconnect', () => {
       console.log('Client disconnected:', socket.id);
-      
+
       const user = users[socket.id];
       if (user) {
         const userId = user.userId;
         user.status = 'offline';
         user.lastActive = new Date();
-        
+
         // Broadcast user offline status
         socket.broadcast.emit('userStatusChange', {
           userId,
           status: 'offline'
         });
-        
+
         // Clean up after 5 minutes
         setTimeout(() => {
           if (users[socket.id]?.status === 'offline') {
             delete users[socket.id];
           }
         }, 5 * 60 * 1000);
-        
+
         // Remove user from all rooms
         Object.keys(rooms).forEach(roomId => {
           if (rooms[roomId]?.has(userId)) {

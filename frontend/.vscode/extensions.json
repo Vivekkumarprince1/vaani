@@ -1,9 +1,0 @@
-{
-  "recommendations": [
-    "vercel.vercel",
-    "esbenp.prettier-vscode",
-    "dbaeumer.vscode-eslint",
-    "ms-playwright.playwright",
-    "eamodio.gitlens"
-  ]
-}

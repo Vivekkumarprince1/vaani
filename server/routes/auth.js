@@ -1,0 +1,276 @@
+const express = require('express');
+const bcrypt = require('bcryptjs');
+const jwt = require('jsonwebtoken');
+const mongoose = require('mongoose');
+const connectDB = require('../lib/db');
+const User = require('../lib/models/User');
+const authenticate = require('../middleware/auth');
+
+const router = express.Router();
+
+router.post('/login', async (req, res) => {
+  try {
+    await connectDB();
+
+    const { mobileNumber, password } = req.body;
+
+    const user = await User.findOne({ mobileNumber });
+    if (!user) return res.status(400).json({ error: 'Invalid credentials' });
+
+    const isMatch = await bcrypt.compare(password, user.password);
+    if (!isMatch) return res.status(400).json({ error: 'Invalid credentials' });
+
+    // Update user status to online
+    user.status = 'online';
+    user.lastActive = Date.now();
+    await user.save();
+
+    const token = jwt.sign(
+      { userId: user._id, role: user.role, username: user.username },
+      process.env.JWT_SECRET,
+      { expiresIn: '24h' }
+    );
+
+    return res.json({
+      token,
+      user: {
+        id: user._id,
+        username: user.username,
+        status: user.status,
+        preferredLanguage: user.preferredLanguage
+      }
+    });
+  } catch (err) {
+    console.error('Login error:', err);
+    return res.status(500).json({ error: 'Login failed' });
+  }
+});
+
+router.post('/register', async (req, res) => {
+  try {
+    await connectDB();
+
+    const { username, mobileNumber, password } = req.body;
+
+    // Check if mobile number already exists
+    const existingMobile = await User.findOne({ mobileNumber });
+    if (existingMobile) {
+      return res.status(400).json({ error: 'Mobile number already registered' });
+    }
+
+    // Check if username already exists
+    const existingUsername = await User.findOne({ username });
+    if (existingUsername) {
+      return res.status(400).json({ error: 'Username already taken' });
+    }
+
+    // Hash password
+    const hashedPassword = await bcrypt.hash(password, 10);
+
+    // Create new user
+    const user = new User({
+      username,
+      mobileNumber,
+      password: hashedPassword,
+      email: undefined
+    });
+
+    await user.save();
+
+    // Generate token so the user is instantly logged in after registration
+    const token = jwt.sign(
+      { userId: user._id, role: user.role, username: user.username },
+      process.env.JWT_SECRET,
+      { expiresIn: '24h' }
+    );
+
+    return res.status(201).json({
+      message: 'User registered successfully',
+      token,
+      user: {
+        id: user._id,
+        username: user.username,
+        status: user.status,
+        preferredLanguage: user.preferredLanguage
+      }
+    });
+  } catch (err) {
+    console.error('Registration error:', err);
+    return res.status(500).json({ error: 'Registration failed' });
+  }
+});
+
+router.get('/me', async (req, res) => {
+  try {
+    await connectDB();
+
+    const token = req.header('x-auth-token');
+    if (!token) {
+      return res.status(401).json({ error: 'No token, authorization denied' });
+    }
+
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    const user = await User.findById(decoded.userId).select('-password');
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    // Update online status
+    user.status = 'online';
+    user.lastActive = Date.now();
+    await user.save();
+
+    return res.json(user);
+  } catch (err) {
+    console.error('Auth me error:', err);
+    if (err.name === 'JsonWebTokenError') {
+      return res.status(401).json({ error: 'Token is not valid' });
+    }
+    return res.status(500).json({ error: 'Server error' });
+  }
+});
+
+router.get('/users', async (req, res) => {
+  try {
+    await connectDB();
+
+    const token = req.header('x-auth-token');
+    if (!token) {
+      return res.status(401).json({ error: 'No token, authorization denied' });
+    }
+
+    jwt.verify(token, process.env.JWT_SECRET);
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    const currentUser = await User.findById(decoded.userId).populate('contacts', '-password');
+
+    if (!currentUser) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    // Default to only returning the user's contacts
+    const onlineOnly = req.query.online === 'true' || req.query.online === '1';
+
+    if (onlineOnly) {
+      const connected = global.__connectedUsers || {};
+      const onlineUserIds = new Set(Object.values(connected).map(u => String(u.userId)));
+      
+      const onlineContacts = currentUser.contacts.filter(contact => 
+        onlineUserIds.has(String(contact._id))
+      );
+      return res.json(onlineContacts);
+    }
+
+    return res.json(currentUser.contacts);
+  } catch (err) {
+    console.error('Get users error:', err);
+    if (err.name === 'JsonWebTokenError') {
+      return res.status(401).json({ error: 'Token is not valid' });
+    }
+    return res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Logout endpoint: marks user offline and notifies other sockets
+router.post('/logout', authenticate, async (req, res) => {
+  try {
+    await connectDB();
+
+    const userId = req.user.userId || req.user.userId;
+    if (!userId) return res.status(400).json({ error: 'Invalid user' });
+
+    // Update DB status
+    const user = await User.findById(userId);
+    if (user) {
+      user.status = 'offline';
+      user.lastActive = Date.now();
+      await user.save();
+    }
+
+    // Remove any connected sockets for this user and notify others
+    const connected = global.__connectedUsers || {};
+    const io = global.__io;
+
+    Object.keys(connected).forEach(socketId => {
+      const u = connected[socketId];
+      if (String(u.userId) === String(userId)) {
+        // notify other clients
+        if (io) io.emit('userStatusChange', { userId, status: 'offline' });
+        delete connected[socketId];
+      }
+    });
+
+    return res.json({ success: true });
+  } catch (err) {
+    console.error('Logout error:', err);
+    return res.status(500).json({ error: 'Logout failed' });
+  }
+});
+
+router.put('/language', authenticate, async (req, res) => {
+  try {
+    await connectDB();
+
+    const { language } = req.body;
+
+    const user = await User.findByIdAndUpdate(
+      req.user.userId,
+      { preferredLanguage: language },
+      { new: true }
+    ).select('-password');
+
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    return res.json(user);
+  } catch (err) {
+    console.error('Update language error:', err);
+    return res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Contact endpoints
+router.post('/contacts/add', authenticate, async (req, res) => {
+  try {
+    const { mobileNumber } = req.body;
+    if (!mobileNumber) {
+      return res.status(400).json({ error: 'Mobile number is required' });
+    }
+
+    const contactToAdd = await User.findOne({ mobileNumber });
+    if (!contactToAdd) {
+      return res.status(404).json({ error: 'User not found. You can invite them to Vaani!' });
+    }
+
+    if (String(contactToAdd._id) === String(req.user.userId)) {
+      return res.status(400).json({ error: 'You cannot add yourself as a contact' });
+    }
+
+    const currentUser = await User.findById(req.user.userId);
+    if (!currentUser.contacts) {
+      currentUser.contacts = [];
+    }
+
+    if (currentUser.contacts.includes(contactToAdd._id)) {
+      return res.status(400).json({ error: 'User is already in your contacts' });
+    }
+
+    currentUser.contacts.push(contactToAdd._id);
+    await currentUser.save();
+
+    // Optionally also add current user to their contacts for mutual connection
+    if (!contactToAdd.contacts) contactToAdd.contacts = [];
+    if (!contactToAdd.contacts.includes(currentUser._id)) {
+      contactToAdd.contacts.push(currentUser._id);
+      await contactToAdd.save();
+    }
+
+    const addedContact = await User.findById(contactToAdd._id).select('-password');
+    return res.json({ success: true, contact: addedContact });
+  } catch (err) {
+    console.error('Add contact error:', err);
+    return res.status(500).json({ error: 'Failed to add contact' });
+  }
+});
+
+module.exports = router;

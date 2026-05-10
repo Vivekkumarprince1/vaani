@@ -45,6 +45,23 @@ const useAudioProcessing = (localStream, remoteStream, socket, selectedUser, cur
   // ✅ Performance metrics tracking
   const currentMetricRef = useRef(null);
 
+  // Refs to avoid stale closures in onaudioprocess
+  const selectedUserRef = useRef(selectedUser);
+  const currentLanguageRef = useRef(currentLanguage);
+  const callParticipantRef = useRef(null);
+
+  useEffect(() => {
+    selectedUserRef.current = selectedUser;
+  }, [selectedUser]);
+
+  useEffect(() => {
+    currentLanguageRef.current = currentLanguage;
+  }, [currentLanguage]);
+
+  useEffect(() => {
+    callParticipantRef.current = callParticipant;
+  }, [callParticipant]);
+
   useEffect(() => {
     if (typeof window === 'undefined') return;
     
@@ -55,7 +72,7 @@ const useAudioProcessing = (localStream, remoteStream, socket, selectedUser, cur
   }, [socket, peerConnection]);
 
   const getTargetUser = () => {
-    return callParticipant || selectedUser;
+    return callParticipantRef.current || selectedUserRef.current;
   };
 
   useEffect(() => {
@@ -72,6 +89,8 @@ const useAudioProcessing = (localStream, remoteStream, socket, selectedUser, cur
         console.error('No audio track found');
         return;
       }
+      
+      console.log('🎙️  Audio Context Sample Rate:', audioContextRef.current.sampleRate);
       
       sourceNodeRef.current = audioContextRef.current.createMediaStreamSource(
         new MediaStream([audioTrack])
@@ -97,10 +116,10 @@ const useAudioProcessing = (localStream, remoteStream, socket, selectedUser, cur
     let audioBuffer = new Float32Array();
     let silenceCounter = 0;
     
-    // OPTIMIZED: Reduce thresholds for faster response
-    const SILENCE_THRESHOLD = 1; // ~64ms of silence (was 96ms)
-    const MIN_AUDIO_LENGTH = audioContextRef.current.sampleRate * 0.1; // 0.1s min (was 0.5s)
-    const MIN_PROCESS_INTERVAL = 150; // Minimum 150ms between sends
+    // OPTIMIZED: Balance between latency and recognition accuracy
+    const SILENCE_THRESHOLD = 30; // ~1 second of silence (was 64ms)
+    const MIN_AUDIO_LENGTH = audioContextRef.current.sampleRate * 0.6; // 0.6s min (was 0.3s)
+    const MIN_PROCESS_INTERVAL = 300; // Minimum 300ms between sends
     
     processorNodeRef.current.onaudioprocess = (e) => {
       if (!socket?.connected || isProcessingRef.current) return;
@@ -165,18 +184,18 @@ const useAudioProcessing = (localStream, remoteStream, socket, selectedUser, cur
       // Convert and send immediately - no delays
       const pcmData = convertToInt16(audioData);
       const wavBuffer = createWavBuffer(pcmData);
-      const base64Audio = await convertToBase64(wavBuffer);
       
       performanceMetrics.recordTimestamp(metric, 'audioProcessed');
       
-      // Single event for entire pipeline (optimized)
+      // Send to server for translation
+      // OPTIMIZED: Send raw binary (Uint8Array) instead of base64
+      const currentLang = currentLanguageRef.current;
+      console.log(`🎤 Sending audio chunk: ${currentLang} -> ${targetLanguage} (${wavBuffer.length} bytes)`);
       socket.emit('translateSpeechOptimized', {
-        audio: base64Audio,
-        sourceLanguage: currentLanguage,
+        audio: wavBuffer, // binary Uint8Array
+        sourceLanguage: currentLang,
         targetLanguage,
         userId: targetUserId,
-        sampleRate: 16000,
-        encoding: 'WAV',
         requestId,
         timestamp: Date.now() // For latency tracking
       });
@@ -290,11 +309,10 @@ const useAudioProcessing = (localStream, remoteStream, socket, selectedUser, cur
           
           // Play translated audio when provided (final result)
           if (data.audio && !partial) {
-            console.log(`🔊 Client received audio for playback: ${data.audio.length} chars`);
+            console.log(`🔊 Client received audio for playback: ${data.audio.byteLength || data.audio.length} bytes`);
             // Enqueue audio for sequential playback
             try {
-              const audioBase64 = data.audio;
-              enqueueTtsAudio(audioBase64, { requestId, timestamp, text: text.translated });
+              enqueueTtsAudio(data.audio, { requestId, timestamp, text: text.translated });
             } catch (err) {
               console.error('❌ Error enqueueing translated audio:', err);
             }
@@ -339,19 +357,34 @@ const useAudioProcessing = (localStream, remoteStream, socket, selectedUser, cur
       }
     });
 
+    const handleUserLanguageChanged = (data) => {
+      const target = getTargetUser();
+      const targetId = target?.id || target?._id;
+      if (data.userId === targetId) {
+        console.log(`🌍 Remote user changed language to: ${data.preferredLanguage}`);
+        setCallParticipant(prev => ({
+          ...prev,
+          preferredLanguage: data.preferredLanguage
+        }));
+      }
+    };
+    
+    socket.on('userLanguageChanged', handleUserLanguageChanged);
+
     return () => {
       socket.off('translatedSpeech', handleTranslatedSpeech);
       socket.off('translatedTextPartial', handleTranslatedTextPartial);
       socket.off('callParticipantInfo');
+      socket.off('userLanguageChanged', handleUserLanguageChanged);
       // cleanup any queued or playing audio
       stopAndCleanupTts();
     };
   }, [socket, currentLanguage]);
 
   // Enqueue a base64 audio string (TTS) with optional metadata
-  const enqueueTtsAudio = (base64Audio, meta = {}) => {
-    if (!base64Audio) return;
-    ttsQueueRef.current.push({ base64: base64Audio, meta });
+  const enqueueTtsAudio = (audioBuffer, meta = {}) => {
+    if (!audioBuffer) return;
+    ttsQueueRef.current.push({ buffer: audioBuffer, meta });
     console.log('🔔 TTS enqueued, queue length:', ttsQueueRef.current.length, meta?.requestId || '');
     // Start the runner if not already running
     if (!runnerRunningRef.current) {
@@ -397,7 +430,7 @@ const useAudioProcessing = (localStream, remoteStream, socket, selectedUser, cur
     while (ttsQueueRef.current.length > 0) {
       const next = ttsQueueRef.current.shift();
       if (!next) break;
-      const { base64, meta } = next;
+      const { buffer, meta } = next;
       console.log('▶️ TTS runner playing next, remaining:', ttsQueueRef.current.length, meta?.requestId || '');
       // Defensive: ensure any prior audio is stopped
       if (currentAudioElRef.current) {
@@ -408,10 +441,11 @@ const useAudioProcessing = (localStream, remoteStream, socket, selectedUser, cur
         currentAudioElRef.current = null;
       }
       try {
-        const audioUrl = `data:audio/mp3;base64,${base64}`;
+        const blob = new Blob([buffer], { type: 'audio/mp3' });
+        const audioUrl = URL.createObjectURL(blob);
         const audioEl = new Audio(audioUrl);
         currentAudioElRef.current = audioEl;
-        console.log('🔊 TTS playback started for', meta?.requestId || '', 'url len', audioUrl.length);
+        console.log('🔊 TTS playback started for', meta?.requestId || '', 'buffer size', buffer.length);
         // await audio end or error
         // eslint-disable-next-line no-await-in-loop
         await playAudioAndWait(audioEl);

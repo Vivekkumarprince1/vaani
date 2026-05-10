@@ -172,7 +172,7 @@ class PerformanceMetrics {
     console.log(`│ 🎯 Recognition           │ ${this._formatDuration(dur.recognition)} │`);
     console.log(`│ 🌍 Translation           │ ${this._formatDuration(dur.translation)} │`);
     console.log(`│ 🖥️  Server Total         │ ${this._formatDuration(dur.serverTotal)} │`);
-    console.log(`│ 📡 Return Transmission   │ ${this._formatDuration(dur.returnTransmission)} │`);
+    console.log(`│ 🔊 TTS & Return Trans    │ ${this._formatDuration(dur.returnTransmission)} │`);
     console.log(`│ 🖼️  Display Render       │ ${this._formatDuration(dur.display)} │`);
     console.log(`├─────────────────────────────────────────────────┤`);
     console.log(`│ ⚡ TOTAL END-TO-END     │ ${this._formatDuration(dur.endToEnd)} │`);

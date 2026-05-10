@@ -86,14 +86,8 @@ const textToSpeech = async (text, targetLanguage, maxRetries = 3) => {
   let attempts = 0;
   let lastError = null;
 
-  if (attempts === 0) {
-    try {
-      const ok = await testAzureSpeechConnection();
-      if (!ok) console.warn('Azure Speech Service connection test failed before synthesis');
-    } catch (e) {
-      console.error('Error testing Azure connection:', e);
-    }
-  }
+  // Connection test removed to optimize latency.
+  // Connections are handled by the SDK's internal retry logic.
 
   while (attempts < maxRetries) {
     try {

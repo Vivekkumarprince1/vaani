@@ -22,13 +22,24 @@ module.exports = (io, users, rooms, findUserByUserId) => {
     });
 
     // Store user connection - KEY BY SOCKET ID for proper lookup in audio handler
+    // Fetch latest user data from DB to get saved language preference
+    let dbUser = null;
+    try {
+      dbUser = await User.findById(userId);
+    } catch (err) {
+      console.warn(`Failed to fetch user ${userId} from DB during registration`);
+    }
+
+    const finalUsername = dbUser?.username || username;
+    const preferredLanguage = dbUser?.preferredLanguage || 'en';
+
     users[socket.id] = {
       socketId: socket.id,
       userId: userId,
-      username: username,
+      username: finalUsername,
       status: 'online',
       lastActive: new Date(),
-      preferredLanguage: 'en' // Default, will be updated by updateLanguagePreference event
+      preferredLanguage: preferredLanguage
     };
 
     // Update user status in database
@@ -38,7 +49,7 @@ module.exports = (io, users, rooms, findUserByUserId) => {
         lastActive: new Date(),
         socketId: socket.id
       });
-      console.log(`✅ User registered: socketId=${socket.id}, userId=${userId}, username=${username} - DB updated`);
+      console.log(`✅ User registered: socketId=${socket.id}, userId=${userId}, username=${finalUsername}, lang=${preferredLanguage} - DB updated`);
     } catch (error) {
       console.error(`❌ Failed to update user status in DB for userId=${userId}:`, error);
     }
@@ -71,6 +82,13 @@ module.exports = (io, users, rooms, findUserByUserId) => {
       const { language } = data;
       if (language && users[socket.id]) {
         users[socket.id].preferredLanguage = language;
+        
+        // Broadcast change so anyone in a call with this user can update their UI/translation target
+        socket.broadcast.emit('userLanguageChanged', {
+          userId: userId,
+          preferredLanguage: language
+        });
+
         socket.emit('languagePreferenceUpdated', {
           language,
           success: true
@@ -283,6 +301,7 @@ module.exports = (io, users, rooms, findUserByUserId) => {
             io.to(toUser.socketId).emit('incomingCall', {
               from: userId,
               fromName: socket.user.username,
+              fromLanguage: socket.user.preferredLanguage || 'en',
               offer,
               callType
             });
@@ -310,6 +329,7 @@ module.exports = (io, users, rooms, findUserByUserId) => {
         if (toUser) {
           io.to(toUser.socketId).emit('callAnswered', {
             from: userId,
+            fromLanguage: socket.user.preferredLanguage || 'en',
             answer
           });
         }
@@ -359,10 +379,10 @@ module.exports = (io, users, rooms, findUserByUserId) => {
 
     // Handle incomingCallAck - relay from callee to caller
     socket.on('incomingCallAck', (data) => {
-      const { from, to, callSessionId } = data;
-      console.log(`📣 incomingCallAck from userId=${userId} (callee) to userId=${to || from} (caller)`);
+      const { callerId, callSessionId } = data;
+      console.log(`📣 incomingCallAck from userId=${userId} (callee) to userId=${callerId} (caller)`);
 
-      const callerUser = findUserByUserId(to || from);
+      const callerUser = findUserByUserId(callerId);
       if (callerUser) {
         io.to(callerUser.socketId).emit('incomingCallAck', {
           from: userId,

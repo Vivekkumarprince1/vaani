@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import axios from 'axios';
+import { AuthContext } from './AuthContext';
 import { getCachedTranslation, setCachedTranslation, clearTranslationCache, prefetchModel } from '../hooks/useTranslationCache';
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000/api';
@@ -52,24 +53,34 @@ const UI_TRANSLATIONS = {
 };
 
 export const TranslationProvider = ({ children }) => {
+  const { user } = useContext(AuthContext);
+  // Functional initializer to prevent flash of default language
   const [currentLanguage, setCurrentLanguage] = useState(() => {
     if (typeof window !== 'undefined') {
-      return localStorage.getItem('preferredLanguage') || 'en';
+      const saved = localStorage.getItem('preferredLanguage');
+      if (saved) return saved;
     }
     return 'en';
   });
   
+  const [isInitialized, setIsInitialized] = useState(false);
   const [languages, setLanguages] = useState({});
 
-  // Load saved language preference on mount
+  // Sync with user profile only if no local preference exists or if profile is explicitly different
   useEffect(() => {
-    if (typeof window !== 'undefined') {
-      const savedLanguage = localStorage.getItem('preferredLanguage');
-      if (savedLanguage) {
-        setCurrentLanguage(savedLanguage);
+    if (isInitialized || !user) return;
+
+    if (user.preferredLanguage && user.preferredLanguage !== currentLanguage) {
+      // If the server has a different language, we might want to sync, 
+      // but let's prioritize localStorage for now as per user request
+      const saved = localStorage.getItem('preferredLanguage');
+      if (!saved) {
+        setCurrentLanguage(user.preferredLanguage);
+        console.log('🌍 Synced language from user profile:', user.preferredLanguage);
       }
     }
-  }, []);
+    setIsInitialized(true);
+  }, [user, isInitialized, currentLanguage]);
   
   // Fetch available languages from Azure Translator API
   useEffect(() => {
@@ -96,6 +107,31 @@ export const TranslationProvider = ({ children }) => {
     if (typeof window !== 'undefined') {
       localStorage.setItem('preferredLanguage', currentLanguage);
     }
+  }, [currentLanguage]);
+
+  // Sync language with socket when it connects or currentLanguage changes
+  useEffect(() => {
+    const syncWithSocket = async () => {
+      try {
+        const socketManager = (await import('../utils/socketManager')).default;
+        if (socketManager.socket?.connected) {
+          socketManager.emit('updateLanguagePreference', { language: currentLanguage });
+          console.log('📡 Auto-synced language preference with server:', currentLanguage);
+        } else if (socketManager.socket) {
+          // If not connected yet, wait for connect event
+          const onConnect = () => {
+            socketManager.emit('updateLanguagePreference', { language: currentLanguage });
+            console.log('📡 Synced language preference on connect:', currentLanguage);
+            socketManager.off('connect', onConnect);
+          };
+          socketManager.on('connect', onConnect);
+        }
+      } catch (err) {
+        console.warn('Could not sync language with socket:', err);
+      }
+    };
+
+    syncWithSocket();
   }, [currentLanguage]);
 
   // Prefetch a lightweight language artifact (if backend exposes it) to speed up local work

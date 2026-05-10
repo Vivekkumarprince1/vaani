@@ -44,10 +44,14 @@ const handleGroupCallAudioTranslation = (io, socket, users) => {
         return;
       }
       
-      // Convert base64 to buffer
+      // Convert binary/base64 to buffer
       let audioBuffer;
       try {
-        audioBuffer = Buffer.from(audio, 'base64');
+        if (Buffer.isBuffer(audio) || audio instanceof Uint8Array) {
+          audioBuffer = Buffer.from(audio);
+        } else {
+          audioBuffer = Buffer.from(audio, 'base64');
+        }
       } catch (err) {
         console.error('Error decoding audio data:', err);
         socket.emit('groupCallError', { 
@@ -204,8 +208,7 @@ const handleGroupCallAudioTranslation = (io, socket, users) => {
                 console.error('TTS error for language', lang, ttsErr);
               }
 
-              const audioBase64 = ttsBuffer ? ttsBuffer.toString('base64') : null;
-              return { lang, finalText, audioBase64 };
+              return { lang, finalText, ttsBuffer };
             })();
 
             entries.push({ lang, socketsForLang, promise });
@@ -236,13 +239,13 @@ const handleGroupCallAudioTranslation = (io, socket, users) => {
               continue;
             }
 
-            const { finalText, audioBase64 } = res.value || { finalText: recognizedText, audioBase64: null };
+            const { finalText, ttsBuffer } = res.value || { finalText: recognizedText, ttsBuffer: null };
             for (const pSocket of socketsForLang) {
               try {
                 pSocket.emit('groupCallTranslatedSpeech', {
                   originalText: recognizedText,
                   translatedText: finalText,
-                  audio: audioBase64,
+                  audio: ttsBuffer, // raw binary Buffer
                   sourceLanguage: preferredSpeakerLanguage,
                   targetLanguage: lang,
                   speakerId,
@@ -324,13 +327,11 @@ const handleGroupCallAudioTranslation = (io, socket, users) => {
         console.error('TTS failed for group call translation:', ttsErr);
       }
 
-      const audioBase64 = ttsBuffer ? ttsBuffer.toString('base64') : null;
-
       // Emit a combined payload (text + audio) to the requesting listener only
       socket.emit('groupCallTranslatedSpeech', {
         originalText: text,
         translatedText,
-        audio: audioBase64,
+        audio: ttsBuffer, // Sending raw binary Buffer
         sourceLanguage,
         targetLanguage,
         speakerId,

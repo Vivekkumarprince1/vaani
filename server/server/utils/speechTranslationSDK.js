@@ -135,93 +135,89 @@ const translateSpeechDirect = async (audioBuffer, sourceLanguage, targetLanguage
     return { original: '', translated: '', error: 'Audio too short' };
   }
 
-  const cacheKey = makeCacheKey('stt_translate', { hash: audioBuffer.toString('base64').slice(0, 64), sourceLocale, targetLangCode });
+  // Improved cache key: use more data + length to avoid WAV header collisions
+  const cacheKey = makeCacheKey('stt_translate', { 
+    hash: audioBuffer.slice(44, 108).toString('base64'), 
+    len: audioBuffer.length,
+    sourceLocale, 
+    targetLangCode 
+  });
   const cached = cache.get(cacheKey);
   if (cached) return { original: cached.original, translated: cached.translated, error: null };
 
   const run = async () => {
+    // Log audio info for debugging
+    const soundDetected = (buf) => {
+      // Skip header and check for non-zero PCM samples
+      for (let i = 44; i < Math.min(buf.length, 1000); i += 2) {
+        if (Math.abs(buf.readInt16LE(i)) > 150) return true;
+      }
+      return false;
+    };
+
+    const hasSound = soundDetected(audioBuffer);
+    console.log(`📡 [SDK] Processing audio: ${audioBuffer.length} bytes for ${sourceLocale} -> ${targetLangCode}, sound: ${hasSound}`);
+    
+    if (!hasSound) {
+      return { original: '', translated: '' };
+    }
+
     // Use a pooled translation config to avoid recreating objects
     const translationConfig = getTranslationConfig(sourceLocale, [targetLangCode]);
 
-    const pushStream = sdk.AudioInputStream.createPushStream();
-    const audioConfig = sdk.AudioConfig.fromStreamInput(pushStream);
+    // ✅ SIMPLIFIED: Azure SDK can handle WAV buffers directly
+    const audioConfig = sdk.AudioConfig.fromWavFileInput(audioBuffer);
     const recognizer = new sdk.TranslationRecognizer(translationConfig, audioConfig);
 
     return await new Promise((resolve, reject) => {
-      let recognizedText = '';
-      let translatedText = '';
-
-      recognizer.recognizing = (s, e) => {
-        try {
-          if (e.result && e.result.reason === sdk.ResultReason.TranslatingSpeech) {
-            const partialOriginal = (e.result.text || '').trim();
-            const partialTranslation = e.result.translations ? e.result.translations.get(targetLangCode) : '';
-            if (partialOriginal && onPartialResult) {
-              onPartialResult({ original: partialOriginal, translated: partialTranslation || '', isFinal: false });
-            }
-          }
-        } catch (err) { /* ignore partial handler errors */ }
-      };
-
-      recognizer.recognized = (s, e) => {
-        if (e.result && e.result.reason === sdk.ResultReason.TranslatedSpeech) {
-          const original = (e.result.text || '').trim();
-          const translation = (e.result.translations && e.result.translations.get(targetLangCode)) || '';
-          if (original) {
-            recognizedText += (recognizedText ? ' ' : '') + original;
-            translatedText += (translatedText ? ' ' : '') + translation;
-            if (onPartialResult) onPartialResult({ original, translated: translation || '', isFinal: true });
-          }
-        }
-      };
-
-      recognizer.canceled = (s, e) => {
-        if (e && e.reason === sdk.CancellationReason.Error) {
-          reject(new Error(e.errorDetails || 'Recognition canceled'));
-        }
-        stopRecognition();
-      };
-
-      recognizer.sessionStopped = () => stopRecognition();
-
-      const stopRecognition = () => {
-        try {
-          recognizer.stopContinuousRecognitionAsync(() => {
-            try { recognizer.close(); } catch (e) { }
-            resolve({ original: recognizedText.trim(), translated: translatedText.trim() });
-          });
-        } catch (e) {
-          // fallback resolve
-          resolve({ original: recognizedText.trim(), translated: translatedText.trim() });
-        }
-      };
-
       // Safety timeout
-      const timer = setTimeout(() => stopRecognition(), 7000);
+      const timer = setTimeout(() => {
+        try { recognizer.close(); } catch (e) {}
+        resolve({ original: '', translated: '' });
+      }, 10000);
 
-      // 1. Start recognition FIRST
-      recognizer.startContinuousRecognitionAsync(() => {
-        // 2. THEN write audio data in chunks
-        try {
-          const chunkSize = 32768;
-          for (let i = 44; i < audioBuffer.length; i += chunkSize) {
-            const chunk = audioBuffer.slice(i, Math.min(i + chunkSize, audioBuffer.length));
-            // Ensure exact ArrayBuffer slice without Node.js buffer pool pollution
-            pushStream.write(chunk.buffer.slice(chunk.byteOffset, chunk.byteOffset + chunk.byteLength));
+      // Start recognition
+      recognizer.recognizeOnceAsync(
+        result => {
+          clearTimeout(timer);
+          if (result) {
+            if (result.reason === sdk.ResultReason.TranslatedSpeech) {
+              const original = (result.text || '').trim();
+              const translation = (result.translations && result.translations.get(targetLangCode)) || '';
+              console.log(`🎯 Azure Recognized: "${original}" -> "${translation}"`);
+              resolve({ original, translated: translation });
+            } else if (result.reason === sdk.ResultReason.NoMatch) {
+              const details = sdk.NoMatchDetails.fromResult(result);
+              console.log(`ℹ️ Azure NoMatch: ${details.reason}`);
+              resolve({ original: '', translated: '' });
+            } else if (result.reason === sdk.ResultReason.Canceled) {
+              const cancellation = sdk.CancellationDetails.fromResult(result);
+              console.warn(`⚠️ Azure Canceled: ${cancellation.reason} - ${cancellation.errorDetails}`);
+              resolve({ original: '', translated: '' });
+            } else {
+              resolve({ original: '', translated: '' });
+            }
+          } else {
+            resolve({ original: '', translated: '' });
           }
-          pushStream.close();
-        } catch (err) {
-          console.error("Failed to write to push stream", err);
-          stopRecognition();
+          try { recognizer.close(); } catch (e) {}
+        },
+        err => {
+          clearTimeout(timer);
+          console.error("Recognition error:", err);
+          try { recognizer.close(); } catch (e) {}
+          reject(err);
         }
-      });
+      );
     });
   };
 
   try {
     const result = await retry(run, { retries: 2, minDelay: 300, maxDelay: 2000 });
-    // Cache short summary
-    cache.set(cacheKey, { original: result.original, translated: result.translated });
+    // ONLY cache if we actually got text
+    if (result && result.original) {
+      cache.set(cacheKey, { original: result.original, translated: result.translated });
+    }
     return { original: result.original, translated: result.translated, error: null };
   } catch (err) {
     return { original: '', translated: '', error: err && err.message ? err.message : String(err) };

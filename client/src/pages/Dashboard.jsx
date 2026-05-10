@@ -820,8 +820,8 @@ const Dashboard = () => {
         try {
           // Ack the incoming call receipt back to caller
           socketManager.emit('incomingCallAck', {
-            from: data.from,
-            to: userRef.current?.id || userRef.current?._id,
+            callerId: data.from,
+            calleeId: userRef.current?.id || userRef.current?._id,
             callSessionId: data.callSessionId
           });
         } catch (e) {
@@ -845,8 +845,18 @@ const Dashboard = () => {
       };
 
       const handleCallAnswered = async (data) => {
-        console.log('✓ Call answered by:', data.from);
+        console.log('✓ Call answered by:', data.from, 'Language:', data.fromLanguage);
         try { callSoundPlayer.stopAll(); } catch (e) { }
+
+        // Sync target language if provided
+        if (data.fromLanguage) {
+          setSelectedUser(prev => {
+            if (prev && (prev.id || prev._id || '').toString() === data.from.toString()) {
+              return { ...prev, preferredLanguage: data.fromLanguage };
+            }
+            return prev;
+          });
+        }
 
         if (data.callSessionId) {
           setActiveCallSession(prev => {
@@ -1438,6 +1448,25 @@ const Dashboard = () => {
       setAcceptingCall(true);
       callSoundPlayer.stopAll();
       setCallType(incomingCall.callType);
+
+      // CRITICAL: Set selected user to the caller so translation knows the target recipient
+      if (!selectedUser && incomingCall.from) {
+        // Robust ID comparison using toString()
+        const caller = users.find(u => (u.id || u._id || '').toString() === incomingCall.from.toString());
+        if (caller) {
+          console.log('✓ Automatically selecting caller for translation:', caller.username || caller.name);
+          setSelectedUser(caller);
+        } else {
+          // Create a minimal user object so translation works even if user not in local cache
+          console.log('ℹ️ Caller not in local cache, creating temporary profile for translation');
+          setSelectedUser({
+            id: incomingCall.from,
+            name: incomingCall.fromName || 'User',
+            username: incomingCall.fromName || 'User',
+            preferredLanguage: incomingCall.fromLanguage || 'en'
+          });
+        }
+      }
 
       if (incomingCall.callSessionId) {
         setActiveCallSession(incomingCall);

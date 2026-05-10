@@ -56,8 +56,8 @@ const VideoCall = ({
 
   // Get language names for display
   const yourLanguageName = languages?.[currentLanguage]?.name || currentLanguage;
-  const theirLanguageName = callParticipant?.language 
-    ? (languages?.[callParticipant.language]?.name || callParticipant.language)
+  const theirLanguageName = callParticipant?.preferredLanguage 
+    ? (languages?.[callParticipant.preferredLanguage]?.name || callParticipant.preferredLanguage)
     : 'Their Language';
 
   return (

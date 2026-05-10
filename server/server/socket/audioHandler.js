@@ -330,11 +330,9 @@ const handleAudioTranslation = (io, socket, users) => {
         // Fall back to sending only transcripts
       }
 
-      const audioBase64 = ttsBuffer ? ttsBuffer.toString('base64') : null;
-
       const finalResponseData = {
         text: { original: result.original || '', translated: result.translated || '' },
-        audio: audioBase64,
+        audio: ttsBuffer, // Sending raw Buffer (binary)
         isLocal: true,
         targetLanguage: finalTargetLanguage,
         requestId,
@@ -398,7 +396,11 @@ const handleAudioTranslation = (io, socket, users) => {
       
       let audioBuffer;
       try {
-        audioBuffer = Buffer.from(audio, 'base64');
+        if (Buffer.isBuffer(audio) || audio instanceof Uint8Array) {
+          audioBuffer = Buffer.from(audio);
+        } else {
+          audioBuffer = Buffer.from(audio, 'base64');
+        }
       } catch (err) {
         console.error('Error converting audio from base64:', err);
         socket.emit('error', {
@@ -411,9 +413,9 @@ const handleAudioTranslation = (io, socket, users) => {
       const receiverData = users[receiverSocketId];
       const finalTargetLanguage = receiverData.preferredLanguage || targetLanguage || 'en';
       
-      // console.log(`   ðŸŽ¯ Target language: ${finalTargetLanguage}`);
+      console.log(`🎙️  Translation Request: ${sourceLanguage} -> ${finalTargetLanguage} (for user ${userId})`);
       
-      // âœ… OPTIMIZED: Single API call for speech translation
+      // ✅ OPTIMIZED: Single API call for speech translation
       const translationStartTime = Date.now();
       
       // Callback for partial results
@@ -467,12 +469,18 @@ const handleAudioTranslation = (io, socket, users) => {
       
       const translationTime = Date.now() - translationStartTime;
       
-      if (result.error || !result.original) {
+      if (result.error) {
         console.error('Translation failed:', result.error);
         socket.emit('error', {
           message: 'Translation failed',
-          requestId
+          requestId: data.requestId
         });
+        return;
+      }
+
+      if (!result.original) {
+        // Silent chunks are common in real-time streams
+        console.log('ℹ️  Empty recognition (silence or unrecognized)');
         return;
       }
       
@@ -489,21 +497,16 @@ const handleAudioTranslation = (io, socket, users) => {
   const { getCachedOrSynthesize } = ttsModule;
   console.log('getCachedOrSynthesize function loaded:', typeof getCachedOrSynthesize);
   console.log('Calling getCachedOrSynthesize...');
-  ttsBuffer = await getCachedOrSynthesize(result.translated, finalTargetLanguage);
-        console.log(`âœ… TTS completed, buffer size: ${ttsBuffer ? ttsBuffer.length : 'null'} bytes`);
+        ttsBuffer = await getCachedOrSynthesize(result.translated, finalTargetLanguage);
+        console.log(`✅ TTS completed, buffer size: ${ttsBuffer ? ttsBuffer.length : 'null'} bytes`);
       } catch (ttsErr) {
-        console.error('âŒ Text-to-speech failed:', ttsErr);
-        console.error('âŒ TTS Error stack:', ttsErr.stack);
-        // Continue without audio if TTS fails
+        console.error('❌ Text-to-speech failed:', ttsErr);
       }
       
-      const audioBase64 = ttsBuffer ? ttsBuffer.toString('base64') : null;
       if (ttsBuffer) {
-        console.log(`ðŸ” Audio buffer first 20 bytes: ${ttsBuffer.slice(0, 20).toString('hex')}`);
-        console.log(`ðŸ” Audio buffer length: ${ttsBuffer.length}`);
-        console.log(`ðŸ” Base64 starts with: ${audioBase64.substring(0, 50)}`);
+        console.log(`🔊 Audio buffer length: ${ttsBuffer.length} bytes`);
       }
-      console.log(`ðŸ“¤ Sending audio: ${audioBase64 ? 'YES' : 'NO'} (${audioBase64 ? audioBase64.length : 0} chars)`);
+      console.log(`📤 Sending audio: ${ttsBuffer ? 'YES' : 'NO'}`);
       
       // Send final result
       // Record clientReceived timestamp just before emitting back
@@ -514,7 +517,7 @@ const handleAudioTranslation = (io, socket, users) => {
           original: result.original,
           translated: result.translated
         },
-        audio: audioBase64,
+        audio: ttsBuffer, // Sending raw Buffer (binary)
         isLocal: true,
         targetLanguage: finalTargetLanguage,
         requestId,

@@ -155,16 +155,10 @@ const useGroupCallAudioProcessing = (
       // Convert to PCM and create WAV buffer
       const pcmData = convertToInt16(audioData);
       const wavBuffer = createWavBuffer(pcmData);
-      const base64Audio = await convertToBase64(wavBuffer);
-
-      performanceMetrics.recordTimestamp(currentMetricRef.current, 'audioProcessed');
-
-      // Include requestId for tracking
-      // const requestId = `group-${Date.now()}`;
-
       // Send to server for speech recognition
+      // OPTIMIZED: Send raw binary (Uint8Array) instead of base64
       socket.emit('groupCallRecognizeSpeech', {
-        audio: base64Audio,
+        audio: wavBuffer, // binary Uint8Array
         sourceLanguage: currentLanguage,
         callRoomId,
         requestId
@@ -240,6 +234,7 @@ const useGroupCallAudioProcessing = (
       // If audio is provided, enqueue it for sequential playback to avoid overlaps
       if (audio) {
         try {
+          // OPTIMIZED: Audio is now received as binary (ArrayBuffer/Buffer)
           enqueueTtsAudio(audio, { speakerId, speakerName, requestId, targetLanguage });
         } catch (err) {
           console.error('Failed to enqueue TTS audio:', err);
@@ -287,10 +282,10 @@ const useGroupCallAudioProcessing = (
     return new Blob(byteArrays, { type: contentType });
   };
 
-  // Enqueue a base64 audio (MP3) for sequential playback
-  const enqueueTtsAudio = (base64Audio, meta = {}) => {
-    if (!base64Audio) return;
-    ttsQueueRef.current.push({ base64: base64Audio, meta });
+  // Enqueue a binary audio buffer (TTS) for sequential playback
+  const enqueueTtsAudio = (audioBuffer, meta = {}) => {
+    if (!audioBuffer) return;
+    ttsQueueRef.current.push({ buffer: audioBuffer, meta });
     // start runner if not running
     if (!runnerRunningRef.current) {
       runnerRunningRef.current = true;
@@ -329,14 +324,15 @@ const useGroupCallAudioProcessing = (
     while (ttsQueueRef.current.length > 0) {
       const next = ttsQueueRef.current.shift();
       if (!next) break;
-      const { base64, meta } = next;
+      const { buffer, meta } = next;
       // stop any existing audio
       if (currentAudioElRef.current) {
         try { currentAudioElRef.current.pause(); currentAudioElRef.current.src = ''; } catch (e) {}
         currentAudioElRef.current = null;
       }
       try {
-        const audioUrl = `data:audio/mp3;base64,${base64}`;
+        const blob = new Blob([buffer], { type: 'audio/mp3' });
+        const audioUrl = URL.createObjectURL(blob);
         const audioEl = new Audio(audioUrl);
         currentAudioElRef.current = audioEl;
         await playAudioAndWait(audioEl);

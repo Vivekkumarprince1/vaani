@@ -90,8 +90,10 @@ class CallSounds {
     this.init();
     this.stopAll();
 
+    this.playingSound = 'ringtone';
     const ok = await this.safePlay(this.sounds.ringtone, 'ringtone');
-    if (!ok) {
+    
+    if (!ok && this.playingSound === 'ringtone') {
       await this.ensureAudioContext();
       this._startGeneratedLoop(420, 'ringtone');
     }
@@ -104,8 +106,12 @@ class CallSounds {
     this.init();
     this.stopAll();
 
+    // Set intended sound before awaiting
+    this.playingSound = 'ringback';
     const ok = await this.safePlay(this.sounds.ringback, 'ringback');
-    if (!ok) {
+    
+    // Only start fallback if we are STILL supposed to be playing ringback
+    if (!ok && this.playingSound === 'ringback') {
       await this.ensureAudioContext();
       this._startGeneratedLoop(620, 'ringback');
     }

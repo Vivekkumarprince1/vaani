@@ -391,6 +391,23 @@ module.exports = (io, users, rooms, findUserByUserId) => {
       }
     });
 
+    // Handle userBusy - relay from callee to caller
+    socket.on('userBusy', (data) => {
+      const { to, callSessionId } = data;
+      console.log(`📣 userBusy from userId=${userId} (callee) to userId=${to} (caller)`);
+
+      pendingCalls.delete(userId);
+      pendingCalls.delete(to);
+
+      const toUser = findUserByUserId(to);
+      if (toUser) {
+        io.to(toUser.socketId).emit('userBusy', {
+          from: userId,
+          callSessionId: callSessionId
+        });
+      }
+    });
+
     // Group call events
     socket.on('joinGroupCall', (data) => {
       const { callRoomId, userId: joinUserId } = data;

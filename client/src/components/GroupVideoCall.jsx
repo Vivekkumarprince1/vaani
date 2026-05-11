@@ -121,11 +121,10 @@ const GroupVideoCall = ({
         console.log(`📥 Received track from ${username} (${socketId})`);
         const remoteStream = event.streams[0];
         
-        // IMPORTANT: Mute all audio tracks from remote streams
-        // Only video will be displayed; audio will come from translated synthesis
+        // Ensure remote audio tracks are enabled for basic communication
         remoteStream.getAudioTracks().forEach(track => {
-          track.enabled = false;
-          console.log(`🔇 Muted audio track from ${username} - will use translated audio instead`);
+          track.enabled = true;
+          console.log(`[GroupVideoCall] Audio track enabled from ${username}`);
         });
         
         setParticipants(prev => {

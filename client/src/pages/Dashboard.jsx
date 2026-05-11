@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useContext, useRef } from 'react';
+import React, { useState, useEffect, useContext, useRef, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import axios from 'axios';
 import { AuthContext } from '../contexts/AuthContext';
@@ -17,6 +17,11 @@ import SocketStatus from '../components/SocketStatus';
 import CreateGroupModal from '../components/CreateGroupModal';
 import GroupManagementModal from '../components/GroupManagementModal';
 import NotificationSettings from '../components/NotificationSettings';
+import callManager from '../managers/CallManager';
+import signalingService from '../services/SignalingService';
+import mediaTrackManager from '../rtc/MediaTrackManager';
+
+
 
 const API_URL = import.meta.env.VITE_API_URL || '/api';
 
@@ -48,6 +53,13 @@ const Dashboard = () => {
   const [remoteStream, setRemoteStream] = useState(null);
   const [isMuted, setIsMuted] = useState(false);
   const [isCameraOff, setIsCameraOff] = useState(false);
+  
+  // Transcripts
+  const [localOriginal, setLocalOriginal] = useState('');
+  const [localTranslated, setLocalTranslated] = useState('');
+  const [remoteOriginal, setRemoteOriginal] = useState('');
+  const [remoteTranslated, setRemoteTranslated] = useState('');
+
   const [incomingCall, setIncomingCall] = useState(null);
   const [acceptingCall, setAcceptingCall] = useState(false);
   const [activeCallSession, setActiveCallSession] = useState(null);
@@ -79,6 +91,21 @@ const Dashboard = () => {
   const roomsRef = useRef([]);
   const currentLanguageRef = useRef(currentLanguage);
   const userRef = useRef(user);
+  const inCallRef = useRef(inCall);
+  const inGroupCallRef = useRef(inGroupCall);
+  const incomingCallRef = useRef(incomingCall);
+
+  const handleCallEndedLocally = useCallback(() => {
+    console.log('[Dashboard] Cleaning up call state locally');
+    setInCall(false);
+    setIncomingCall(null);
+    setLocalStream(null);
+    setRemoteStream(null);
+    callSoundPlayer.stopAll();
+    callManager.cleanup();
+  }, []);
+
+
 
   // Refs
   const localVideoRef = useRef(null);
@@ -322,7 +349,10 @@ const Dashboard = () => {
     selectedRoomRef.current = selectedRoom;
     currentLanguageRef.current = currentLanguage;
     userRef.current = user;
-  }, [selectedUser, selectedRoom, currentLanguage, user]);
+    inCallRef.current = inCall;
+    inGroupCallRef.current = inGroupCall;
+    incomingCallRef.current = incomingCall;
+  }, [selectedUser, selectedRoom, currentLanguage, user, inCall, inGroupCall, incomingCall]);
 
   // Initialize Socket.IO
   useEffect(() => {
@@ -340,26 +370,104 @@ const Dashboard = () => {
     document.addEventListener('click', enableAudio);
     document.addEventListener('keydown', enableAudio);
 
+    // --- Hoisted Socket Handlers ---
+    const handleGroupCallIncoming = (payload = {}) => {
+      try {
+        const currentUserId = user?._id || user?.id;
+        if (!currentUserId) return;
+
+        const invitation = payload.invitation || payload;
+        if (!invitation || !invitation.callRoomId) return;
+
+        if (inCallRef.current || inGroupCallRef.current) {
+          console.log('[Dashboard] Already in a call, ignoring group invitation');
+          return;
+        }
+
+        if (invitation.initiatorId === currentUserId) return;
+
+        console.log('[Dashboard] Showing incoming group call:', invitation.roomName);
+        setIncomingGroupCall(invitation);
+        callSoundPlayer.playRingtone().catch(() => {});
+
+        if (document.hidden) {
+          const initiatorName = invitation.initiator?.username || invitation.initiator?.name || 'Someone';
+          notificationManager.showIncomingCallNotification({
+            fromName: initiatorName,
+            callType: invitation.callType,
+            isGroupCall: true,
+            roomName: invitation.roomName,
+            callId: invitation.callId
+          }, () => {
+            window.focus();
+            joinGroupCall(invitation);
+          }, () => {
+            window.focus();
+            declineGroupCall(invitation);
+          });
+        }
+      } catch (err) {
+        console.error('[Dashboard] Error handling group call incoming:', err);
+      }
+    };
+
+    const handleGroupCallEnded = (data) => {
+      try {
+        console.log('[Dashboard] group_call_ended received');
+        callSoundPlayer.stopAll();
+        callSoundPlayer.playDisconnect().catch(() => {});
+
+        if (inGroupCallRef.current) {
+          setIncomingGroupCall(null);
+          setInGroupCall(false);
+          setGroupCallData(null);
+        }
+      } catch (e) {
+        console.error('[Dashboard] Error handling group_call_ended:', e);
+      }
+    };
+
+    const handleIncomingCall = (data) => {
+      if (inCallRef.current || inGroupCallRef.current || (incomingCallRef.current && incomingCallRef.current.callSessionId !== data.callSessionId)) {
+        console.log('[Dashboard] Signal BUSY to caller:', data.from);
+        signalingService.emitUserBusy({ 
+          to: data.from, 
+          callSessionId: data.callSessionId 
+        });
+        return;
+      }
+
+      console.log('[Dashboard] Received incomingCall:', data);
+      setIncomingCall(data);
+      callSoundPlayer.playRingtone().catch(() => {});
+      
+      notificationManager.showIncomingCallNotification({
+        fromName: data.fromName || 'Someone',
+        callType: data.callType || 'video'
+      }, () => {
+        window.focus();
+      }, () => {
+        rejectCall();
+      });
+    };
+
     try {
       const socket = socketManager.initialize(token);
 
-      // Wait for socket to connect, then send initial language preference
       const sendLanguagePreference = () => {
         if (currentLanguage) {
           socket.emit('updateLanguagePreference', { language: currentLanguage });
-          console.log('📡 Sent initial language preference to server:', currentLanguage);
+          console.log('[Dashboard] Sent initial language preference:', currentLanguage);
         }
       };
 
-      // Send immediately if already connected
       if (socket.connected) {
         sendLanguagePreference();
       } else {
-        // Or wait for connection
         socket.on('connect', sendLanguagePreference);
       }
 
-      // Listen for real-time messages
+      // --- Register Listeners ---
       socketManager.on('receiveMessage', async (msg) => {
         console.log('💬 [RECEIVE_MESSAGE EVENT] Received:', msg);
 
@@ -371,7 +479,7 @@ const Dashboard = () => {
         const senderIdFromMsg = msg.sender?._id || msg.sender?.id || msg.sender;
         const selectedUserId = selUser?.id || selUser?._id;
 
-        console.log(`   � Message details:`, {
+        console.log(`    Message details:`, {
           senderFromMsg: senderIdFromMsg,
           senderFullObj: msg.sender,
           selectedUser: {
@@ -387,8 +495,6 @@ const Dashboard = () => {
         });
 
         // Determine whether this message should be appended to the current view
-        // For sender's own messages: check if RECEIVER matches selected user
-        // For incoming messages: check if SENDER matches selected user
         const currentUserId = userRef.current?._id || userRef.current?.id;
         const isSelfMessage = senderIdFromMsg === currentUserId?.toString() || senderIdFromMsg === currentUserId;
 
@@ -410,20 +516,12 @@ const Dashboard = () => {
 
         const isRoomMatch = selRoom && (msg.room === selRoom._id || msg.roomId === selRoom._id);
 
-        // If it's my own message, check receiver matches. If it's incoming, check sender matches
         const shouldAppend = (isSelfMessage && isReceiverMatch) || (!isSelfMessage && isSenderMatch) || isRoomMatch;
-        console.log(`   ✅ Should append: ${shouldAppend} (isSelf: ${isSelfMessage}, senderMatch: ${isSenderMatch}, receiverMatch: ${isReceiverMatch}, roomMatch: ${isRoomMatch})`);
-
+        
         if (!shouldAppend) {
-          console.log(`   ⏭️ Skipping - message not relevant to current view (selUser: ${selUser?.name}, selRoom: ${selRoom?.name})`);
-
-          // If message is not for current view but is for this user, refresh unread counts
           if (!isSelfMessage) {
             fetchUnreadCounts();
 
-            // Show browser notification for new message if:
-            // 1. Not sent by current user
-            // 2. Window is not focused OR message is not in current chat
             if (document.hidden || !shouldAppend) {
               const senderInfo = typeof msg.sender === 'object' ? msg.sender : null;
               const senderName = senderInfo?.username || senderInfo?.name || 'Someone';
@@ -438,12 +536,10 @@ const Dashboard = () => {
                 messageId: msg._id || msg.id,
                 timestamp: msg.timestamp
               }, () => {
-                // On click: focus window and select the appropriate chat
                 window.focus();
                 if (isGroupMsg && roomInfo) {
                   selectRoom(roomInfo);
                 } else if (senderInfo) {
-                  // Find the user in the users list and select
                   const sender = users.find(u => u.id === (senderInfo._id || senderInfo.id));
                   if (sender) {
                     selectUser(sender);
@@ -452,52 +548,35 @@ const Dashboard = () => {
               });
             }
           }
-
           return;
         }
 
         try {
-          // Translate incoming message into the user's preferred language before appending
           const translatedContent = await translateText(msg.content, currentLanguageRef.current, null);
-          // Attach translated content so MessageSection will display the preferred language immediately
           const msgWithTranslated = { ...msg, content: translatedContent, _originalContent: msg.content };
           setMessages(prev => {
             const persistedId = msgWithTranslated._id || msgWithTranslated.id || `${msgWithTranslated.timestamp}-${msgWithTranslated.sender}`;
-            console.log(`   🔍 Looking for existing message with id: ${persistedId}`);
-            // If already present by persisted id, do nothing
-            if (prev.some(m => (m._id || m.id) === persistedId)) {
-              console.log(`   ℹ️ Message already present by persisted id, skipping`);
-              return prev;
-            }
-            // If we have an optimistic message with clientTempId, replace it
+            if (prev.some(m => (m._id || m.id) === persistedId)) return prev;
             if (msgWithTranslated.clientTempId) {
-              console.log(`   🔍 Looking for optimistic message with clientTempId: ${msgWithTranslated.clientTempId}`);
               const idx = prev.findIndex(m => (m._id === msgWithTranslated.clientTempId) || (m.id === msgWithTranslated.clientTempId));
               if (idx !== -1) {
-                console.log(`   ✅ FOUND optimistic message at index ${idx}, replacing with persisted message`);
                 const copy = prev.slice();
                 copy[idx] = msgWithTranslated;
                 return copy;
-              } else {
-                console.log(`   ⚠️ No optimistic message found with clientTempId`);
               }
             }
-            console.log(`   ➕ Appending new message`);
             return [...prev, msgWithTranslated];
           });
-          // Acknowledge delivery to server when this client (recipient) receives the message
           try {
             const messageId = msg._id || msg.id || null;
             const isFromOther = !(msg.sender && ((msg.sender._id && msg.sender._id === (userRef.current?._id || userRef.current?.id)) || (msg.sender === (userRef.current?._id || userRef.current?.id))));
             if (messageId && isFromOther) {
-              console.log(`📨 [Dashboard] Emitting messageDelivered for messageId=${messageId}`);
               socketManager.emit('messageDelivered', { messageId, clientTempId: msg.clientTempId || null });
             }
           } catch (e) {
             console.error('❌ [Dashboard] Error emitting messageDelivered:', e);
           }
         } catch (err) {
-          console.warn('Translation on receive failed, appending original message:', err);
           setMessages(prev => {
             const persistedId = msg._id || msg.id || `${msg.timestamp}-${msg.sender}`;
             if (prev.some(m => (m._id || m.id) === persistedId)) return prev;
@@ -511,20 +590,9 @@ const Dashboard = () => {
             }
             return [...prev, msg];
           });
-          // Acknowledge delivery in fallback path as well
-          try {
-            const messageId = msg._id || msg.id || null;
-            const isFromOther = !(msg.sender && ((msg.sender._id && msg.sender._id === (userRef.current?._id || userRef.current?.id)) || (msg.sender === (userRef.current?._id || userRef.current?.id))));
-            if (messageId && isFromOther) {
-              socketManager.emit('messageDelivered', { messageId, clientTempId: msg.clientTempId || null });
-            }
-          } catch (e) {
-            // ignore
-          }
         }
       });
 
-      // Listen for message status updates (queued -> sent -> delivered -> seen)
       socketManager.on('messageStatusUpdate', (payload) => {
         try {
           const { messageId, status, clientTempId } = payload || {};
@@ -536,14 +604,7 @@ const Dashboard = () => {
           }
 
           setMessages(prev => {
-            console.log(`   📊 Current messages array (${prev.length} items):`);
-            prev.forEach((m, idx) => {
-              console.log(`     [${idx}] _id=${m._id}, id=${m.id}, clientTempId=${m.clientTempId}, status=${m.status}`);
-            });
-
             const key = messageId || clientTempId;
-            console.log(`   🔍 Looking for key: "${key}"`);
-
             const updatedMessages = prev.map(m => {
               const mId = m._id || m.id;
               const mTempId = m.clientTempId;
@@ -551,23 +612,13 @@ const Dashboard = () => {
               const matchesTempId = mTempId && mTempId.toString() === key.toString();
 
               if (matchesId || matchesTempId) {
-                console.log(`   ✅ MATCH FOUND! mId=${mId} (matches=${matchesId}), mTempId=${mTempId} (matches=${matchesTempId})`);
-                console.log(`      Updating status from "${m.status}" to "${status}"`);
                 return { ...m, status };
               }
               return m;
             });
-
-            const wasUpdated = updatedMessages.some((m, idx) => JSON.stringify(m) !== JSON.stringify(prev[idx]));
-            if (!wasUpdated) {
-              console.log(`   ❌ NO MATCH FOUND! messageId=${messageId}, clientTempId=${clientTempId}`);
-            }
-
             return updatedMessages;
           });
 
-          // Refresh unread counts when status changes to 'delivered' or 'seen'
-          // This handles cases where messages are marked as seen from other devices/tabs
           if (status === 'delivered' || status === 'seen') {
             fetchUnreadCounts();
           }
@@ -576,7 +627,6 @@ const Dashboard = () => {
         }
       });
 
-      // Listen for typing indicators
       socketManager.on('userTyping', (data) => {
         const selUser = selectedUserRef.current;
         const selRoom = selectedRoomRef.current;
@@ -586,7 +636,6 @@ const Dashboard = () => {
         }
       });
 
-      // Listen for user status changes
       socketManager.on('userStatusChange', (data) => {
         setUsers(prevUsers =>
           prevUsers.map(u =>
@@ -597,9 +646,8 @@ const Dashboard = () => {
         );
       });
 
-      // Listen for room updates (members added/removed, metadata changed)
       socketManager.on('roomUpdated', (updatedRoom) => {
-        console.log('📣 Room updated via socket:', updatedRoom);
+        console.log('[Dashboard] Room updated via socket:', updatedRoom);
         setRooms(prev => prev.map(r => r._id === updatedRoom._id ? updatedRoom : r));
         const selRoom = selectedRoomRef.current;
         if (selRoom && selRoom._id === updatedRoom._id) {
@@ -610,340 +658,103 @@ const Dashboard = () => {
         }
       });
 
-      // Listen for new rooms created that include this user
       socketManager.on('roomCreated', (newRoom) => {
-        console.log('📣 New room created via socket:', newRoom);
+        console.log('[Dashboard] New room created via socket:', newRoom);
         setRooms(prev => {
-          // Avoid duplicates
           if (prev.some(r => r._id === newRoom._id)) return prev;
           return [newRoom, ...prev];
         });
       });
 
-      console.log('Socket.IO initialization attempted');
-      console.log('Current user ID:', user?._id || user?.id);
-
-      const handleGroupCallIncoming = (payload = {}) => {
-        console.log('🔔 [DEBUG] handleGroupCallIncoming called with payload:', payload);
-
-        try {
-          const currentUserId = user?._id || user?.id;
-          if (!currentUserId) {
-            console.warn('⚠️ No current user ID, ignoring group call invitation');
-            return;
-          }
-
-          console.log(`   👤 Current user: ${currentUserId}`);
-
-          const participantIds = (payload.participants || []).map(p =>
-            typeof p === 'string' ? p : p?.userId || p?.id
-          ).filter(Boolean);
-
-          console.log(`   👥 Participant IDs in call:`, participantIds);
-
-          if (!participantIds.some(id => id?.toString() === currentUserId.toString())) {
-            console.warn('⚠️ Current user is not in participant list, ignoring call');
-            return;
-          }
-
-          const invitation = {
-            callId: payload.callId,
-            callRoomId: payload.callRoomId,
-            roomId: payload.roomId,
-            roomName: payload.roomName,
-            callType: payload.callType || 'video',
-            initiator: payload.initiator
-          };
-
-          console.log('✅ Received group call invitation:', invitation);
-          setIncomingGroupCall(invitation);
-          callSoundPlayer.playRingtone().catch(() => {
-            console.log('Ringtone not played for group call invitation');
-          });
-
-          // Show browser notification if window is not focused
-          if (document.hidden) {
-            const initiatorName = invitation.initiator?.username || invitation.initiator?.name || 'Someone';
-            notificationManager.showIncomingCallNotification({
-              fromName: initiatorName,
-              callType: invitation.callType,
-              isGroupCall: true,
-              roomName: invitation.roomName,
-              callId: invitation.callId
-            }, () => {
-              // On accept from notification
-              window.focus();
-              joinGroupCall(invitation);
-            }, () => {
-              // On reject from notification
-              window.focus();
-              declineGroupCall(invitation);
-            });
-          }
-        } catch (err) {
-          console.error('❌ Failed to handle group call incoming payload:', err);
-        }
-      };
-
-      // Deprecated event support
-      const handleGroupCallInvitation = (invitation) => {
-        if (!invitation) return;
-        console.log('📣 Received group call invitation (deprecated event):', invitation);
-        handleGroupCallIncoming(invitation);
-      };
-
-      console.log('🎧 Registering socket listeners for group calls...');
       socketManager.on('groupCallIncoming', handleGroupCallIncoming);
-      socketManager.on('groupCallInvitation', handleGroupCallInvitation);
-      // Backwards compatibility: listen to different event name variants
-      socketManager.on('groupCallInitiated', (payload) => {
-        console.log('🔔 Received groupCallInitiated event (old name), converting to groupCallIncoming');
-        handleGroupCallIncoming(payload);
+      socketManager.on('groupCallInvitation', handleGroupCallIncoming);
+      socketManager.on('groupCallInitiated', handleGroupCallIncoming);
+      socketManager.on('group_incoming_call', handleGroupCallIncoming);
+      socketManager.on('group_call_ended', handleGroupCallEnded);
+      socketManager.on('incomingCall', handleIncomingCall);
+      
+      socketManager.on('userBusy', (data) => {
+        callSoundPlayer.stopRingback();
+        callSoundPlayer.playBusyTone().catch(() => {});
+        handleCallEndedLocally();
+        alert(`${data.fromName || 'User'} is currently busy.`);
+        setTimeout(() => callSoundPlayer.stopBusyTone(), 3000);
       });
-      socketManager.on('group_incoming_call', (payload) => {
-        console.log('🔔 Received group_incoming_call (new unified name)');
-        handleGroupCallIncoming(payload);
-      });
-      console.log('✅ Socket listeners registered');
 
-      // Participant events (join/disconnect)
+      socketManager.on('userUnavailable', (data) => {
+        callSoundPlayer.stopRingback();
+        handleCallEndedLocally();
+        alert(`${data.fromName || 'User'} is currently offline.`);
+      });
+
+      socketManager.on('callAnswered', (data) => {
+        callSoundPlayer.stopRingback();
+        callSoundPlayer.playConnect().catch(() => {});
+      });
+
+      socketManager.on('callEnded', (data) => {
+        handleCallEndedLocally();
+        callSoundPlayer.playDisconnect().catch(() => {});
+      });
+
       socketManager.on('participant_joined', (data) => {
-        console.log('🔔 participant_joined:', data);
-        try {
-          const { userId, username } = data || {};
-          // Show a small toast or UI message (simple console for now)
-          console.log(`✅ ${username} joined the call (${userId})`);
-          // If we were ringing or ringbacking, stop those sounds and play connect
-          try {
-            const current = callSoundPlayer.getCurrentSound && callSoundPlayer.getCurrentSound();
-            if (current === 'ringback' || current === 'ringtone') {
-              callSoundPlayer.stopAll();
-              callSoundPlayer.playConnect().catch(() => { });
-            }
-          } catch (e) {
-            console.warn('Error handling sounds on participant_joined:', e);
-          }
-          // Optionally refresh participants list if in a call
-          if (inGroupCall) {
-            // Trigger a re-fetch of the current call data or merge participant locally
-            // For now, append to groupCallData.participants if present
-            setGroupCallData(prev => {
-              if (!prev) return prev;
-              const exists = (prev.participants || []).some(p => (p.userId?._id || p.userId) === userId);
-              if (exists) return prev;
-              return { ...prev, participants: [...(prev.participants || []), { userId, username, status: 'joined' }] };
-            });
-          }
-        } catch (e) {
-          console.error('Error handling participant_joined:', e);
-        }
+        console.log('[Dashboard] Participant joined:', data.username);
       });
 
       socketManager.on('participant_disconnected', (data) => {
-        console.log('⚠️ participant_disconnected:', data);
-        try {
-          const { userId, username, reason } = data || {};
-          // Show UI notification
-          console.warn(`⚠️ ${username} disconnected (${reason})`);
-          // Update groupCallData participants status
-          setGroupCallData(prev => {
-            if (!prev) return prev;
-            const participants = (prev.participants || []).map(p => {
-              const id = p.userId?._id || p.userId || p.id;
-              if (id && id.toString() === userId.toString()) {
-                return { ...p, status: 'left' };
-              }
-              return p;
-            });
-            return { ...prev, participants };
-          });
-        } catch (e) {
-          console.error('Error handling participant_disconnected:', e);
-        }
+        console.log('[Dashboard] Participant disconnected:', data.username);
       });
 
-      // Handle remote end of call (auto-end or explicit end)
-      socketManager.on('group_call_ended', (data) => {
-        try {
-          console.log('🔔 group_call_ended received:', data);
-          // Stop any ringing/ringback immediately
-          callSoundPlayer.stopAll();
-          // Play disconnect sound to notify user the call ended
-          callSoundPlayer.playDisconnect().catch(() => {
-            // ignore
-          });
-
-          // If this client is currently in the call, clean up local state
-          if (inGroupCall) {
-            setInGroupCall(false);
-            setGroupCallData(null);
+      // --- RTC Initialization ---
+      callManager.initialize({
+        onRemoteTrack: (event) => {
+          if (event.streams && event.streams[0]) {
+            setRemoteStream(event.streams[0]);
           }
-
-          // If there was an incoming call modal, dismiss it
-          if (incomingGroupCall) setIncomingGroupCall(null);
-
-        } catch (e) {
-          console.error('Error handling group_call_ended:', e);
-        }
-      });
-
-      // -------------------------------------------------------------
-      // WebRTC Call Listeners
-      // -------------------------------------------------------------
-
-      const handleIncomingCall = (data) => {
-        console.log('📞 Incoming private call from:', data.fromName);
-        callSoundPlayer.playRingtone().catch(() => {
-          console.log('Ringtone not played - showing visual notification instead');
-        });
-
-        if (document.hidden) {
-          notificationManager.showIncomingCallNotification({
-            fromName: data.fromName,
-            callType: data.callType,
-            isGroupCall: Boolean(data.roomId),
-            roomName: data.roomName,
-            callId: data.callSessionId
-          }, () => {
-            window.focus();
-            // Need to set incoming call first so answerCall finds it
-            setIncomingCall(data);
-            // We can't safely call answerCall here directly due to closures, 
-            // user will have to click the regular accept button once focused.
-          }, () => {
-            window.focus();
-            setIncomingCall(data);
-            // reject
-          });
-        }
-
-        try {
-          // Ack the incoming call receipt back to caller
-          socketManager.emit('incomingCallAck', {
-            callerId: data.from,
-            calleeId: userRef.current?.id || userRef.current?._id,
-            callSessionId: data.callSessionId
-          });
-        } catch (e) {
-          console.warn('Failed to send incomingCallAck:', e);
-        }
-        setIncomingCall(data);
-      };
-
-      const handleIncomingCallAck = (data) => {
-        try {
-          console.log('📣 incomingCallAck received:', data);
-          const selUser = selectedUserRef.current;
-          if (selUser && data && data.from && selUser.id && data.from.toString() === selUser.id.toString()) {
-            setCallerRinging(true);
-            setRemoteRingingUser(selUser);
-            callSoundPlayer.playRingback().catch(() => { });
-          }
-        } catch (e) {
-          console.warn('Error in incomingCallAck handler:', e);
-        }
-      };
-
-      const handleCallAnswered = async (data) => {
-        console.log('✓ Call answered by:', data.from, 'Language:', data.fromLanguage);
-        try { callSoundPlayer.stopAll(); } catch (e) { }
-
-        // Sync target language if provided
-        if (data.fromLanguage) {
-          setSelectedUser(prev => {
-            if (prev && (prev.id || prev._id || '').toString() === data.from.toString()) {
-              return { ...prev, preferredLanguage: data.fromLanguage };
+        },
+        onConnectionStateChange: (state) => {
+          if (state === 'connected') callSoundPlayer.playConnect().catch(() => {});
+          if (state === 'disconnected' || state === 'failed') handleCallEndedLocally();
+        },
+        onTranslatedSpeech: (data) => {
+          if (data.text) {
+            if (data.isLocal) {
+              setLocalOriginal(data.text.original);
+              setLocalTranslated(data.text.translated);
+            } else {
+              setRemoteOriginal(data.text.original);
+              setRemoteTranslated(data.text.translated);
             }
-            return prev;
-          });
-        }
-
-        if (data.callSessionId) {
-          setActiveCallSession(prev => {
-            if (prev?.callSessionId) return prev;
-            return {
-              callSessionId: data.callSessionId,
-              callRoomId: data.callRoomId,
-              callType: callType || data.callType,
-              from: data.from
-            };
-          });
-        }
-
-        if (peerConnectionRef.current) {
-          try {
-            await peerConnectionRef.current.setRemoteDescription(new RTCSessionDescription(data.answer));
-            console.log('✓ Remote description set successfully');
-          } catch (err) {
-            console.error('Error setting remote description:', err);
           }
         }
-      };
-
-      const handleIceCandidate = async (data) => {
-        console.log('🧊 Received ICE candidate');
-        if (peerConnectionRef.current) {
-          try {
-            await peerConnectionRef.current.addIceCandidate(new RTCIceCandidate(data.candidate));
-            console.log('✓ ICE candidate added successfully');
-          } catch (err) {
-            console.error('Error adding ICE candidate:', err);
-          }
-        }
-      };
-
-      const handleCallEnded = () => {
-        console.log(' Call ended by remote peer');
-        // Have to use state updater or ref because endCall closure might be stale
-        try { callSoundPlayer.stopAll(); } catch (e) { }
-        setInCall(false);
-        setIncomingCall(null);
-        setCallerRinging(false);
-        setRemoteRingingUser(null);
-        setActiveCallSession(null);
-
-        if (peerConnectionRef.current) {
-          peerConnectionRef.current.close();
-          peerConnectionRef.current = null;
-        }
-
-        setLocalStream(prevStream => {
-          if (prevStream) {
-            prevStream.getTracks().forEach(track => {
-              console.log('Stopping local stream track:', track.kind);
-              track.stop();
-            });
-          }
-          return null;
-        });
-
-        setRemoteStream(null);
-      };
-
-      socketManager.on('incomingCall', handleIncomingCall);
-      socketManager.on('incomingCallAck', handleIncomingCallAck);
-      socketManager.on('callAnswered', handleCallAnswered);
-      socketManager.on('iceCandidate', handleIceCandidate);
-      socketManager.on('callEnded', handleCallEnded);
-
-      // Fetch pending group calls on socket connection
-      // This is already handled concurrently in loadData, so we skip the duplicate fetch here
-      // const fetchPendingCallInvitations = async () => { ... };
-      // fetchPendingCallInvitations();
+      });
     } catch (error) {
-      console.warn('Socket.IO initialization failed:', error.message);
-      // Continue without real-time features
+      console.error('[Dashboard] Socket/RTC initialization failed:', error);
     }
 
-    // Don't cleanup socket on component unmount - let it persist
-    // Only cleanup if explicitly logging out
     return () => {
-      // Clean up event listeners if navigating away
+      // Clean up event listeners
       try {
-        // Don't fully cleanup; just remove specific listeners we added
-        // socketManager.cleanup() is too aggressive - it disconnects the socket
-      } catch (error) {
-        console.warn('Socket listener cleanup error:', error);
+        socketManager.off('receiveMessage');
+        socketManager.off('messageStatusUpdate');
+        socketManager.off('userTyping');
+        socketManager.off('userStatusChange');
+        socketManager.off('roomUpdated');
+        socketManager.off('roomCreated');
+        socketManager.off('groupCallIncoming', handleGroupCallIncoming);
+        socketManager.off('groupCallInvitation', handleGroupCallIncoming);
+        socketManager.off('groupCallInitiated', handleGroupCallIncoming);
+        socketManager.off('group_incoming_call', handleGroupCallIncoming);
+        socketManager.off('group_call_ended', handleGroupCallEnded);
+        socketManager.off('incomingCall', handleIncomingCall);
+        socketManager.off('callAnswered');
+        socketManager.off('callEnded');
+        socketManager.off('userBusy');
+        socketManager.off('userUnavailable');
+        socketManager.off('participant_joined');
+        socketManager.off('participant_disconnected');
+      } catch (err) {
+        console.warn('Socket listener cleanup error:', err);
       }
     };
   }, [isAuthenticated, user]);
@@ -1269,344 +1080,77 @@ const Dashboard = () => {
       return;
     }
 
-    // Check if Socket.IO is connected
     if (!socketManager.socket?.connected) {
-      alert('Real-time connection not available. Please refresh the page and try again.');
+      alert('Real-time connection not available.');
       return;
     }
 
     try {
-      // Enable audio playback (user has interacted by clicking call button)
       callSoundPlayer.enableUserInteraction();
-
-      // For group/room calls, use the new group call feature
+      
       if (selectedRoom) {
         await startGroupCall(type);
         return;
-      } else {
-        setActiveCallSession(null);
       }
 
       setCallType(type);
+      callSoundPlayer.playRingback().catch(() => {});
 
-      // Play ringback sound (non-blocking)
-      callSoundPlayer.playRingback().catch(() => {
-        console.log('Ringback sound not played - user interaction may be required');
-      });
-
-      // Get user media
       const constraints = {
         audio: true,
-        video: type === 'video' ? {
-          width: { ideal: 1280 },
-          height: { ideal: 720 },
-          facingMode: 'user'
-        } : false
+        video: type === 'video' ? { width: { ideal: 1280 }, height: { ideal: 720 } } : false
       };
 
-      const targetName = selectedUser ? selectedUser.name : selectedRoom.name;
-      console.log(`📞 Starting ${type} call to ${targetName}...`);
       const stream = await navigator.mediaDevices.getUserMedia(constraints);
       setLocalStream(stream);
-
-      // Create peer connection
-      const pc = createPeerConnection();
-      peerConnectionRef.current = pc;
-
-      // Add tracks to peer connection
-      // For audio: use a silent track (original voice won't be sent)
-      // For video: use the actual video track
-      stream.getTracks().forEach(track => {
-        if (track.kind === 'audio') {
-          // Replace with silent audio track - original voice won't be sent
-          const silentTrack = createSilentAudioTrack();
-          pc.addTrack(silentTrack, stream);
-          console.log(`✓ Added SILENT audio track to peer connection (original voice muted)`);
-        } else {
-          // Add video track normally
-          pc.addTrack(track, stream);
-          console.log(`✓ Added ${track.kind} track to peer connection`);
-        }
-      });
-
-      // Create and send offer
-      const offer = await pc.createOffer();
-      await pc.setLocalDescription(offer);
-
-      const callData = {
-        offer: offer,
-        callType: type
-      };
-
-      if (selectedRoom) {
-        // Group call
-        callData.roomId = selectedRoom._id;
-        socketManager.emit('callUser', callData);
-        console.log('✓ Group call offer sent successfully');
-      } else {
-        // Private call
-        callData.to = selectedUser.id;
-
-        // Start a delivery timeout: if we don't get an `incomingCallDelivered` ack
-        // within X ms, consider the user unavailable and cleanup the call attempt.
-        const DELIVERY_TIMEOUT_MS = 5000;
-        let deliveryTimer = null;
-
-        const onDelivered = (data) => {
-          try {
-            if (data && data.to === selectedUser.id) {
-              console.log('✓ incomingCallDelivered ack received for', data);
-              if (deliveryTimer) {
-                clearTimeout(deliveryTimer);
-                deliveryTimer = null;
-              }
-              // Remove temporary listeners
-              try { socketManager.off('incomingCallDelivered', onDelivered); } catch (e) { }
-              try { socketManager.off('userUnavailable', onUserUnavailable); } catch (e) { }
-              // keep callerRinging unchanged here; we'll wait for app-level ack to mark ringing
-            }
-          } catch (e) { /* ignore */ }
-        };
-
-        const onUserUnavailable = (payload) => {
-          try {
-            if (payload && payload.to === selectedUser.id) {
-              console.log('⚠️ userUnavailable received for', payload);
-              if (deliveryTimer) {
-                clearTimeout(deliveryTimer);
-                deliveryTimer = null;
-              }
-              // Cleanup call UI
-              callSoundPlayer.stopAll();
-              setInCall(false);
-              setCallType(null);
-              // Clear caller ringing state if any
-              setCallerRinging(false);
-              setRemoteRingingUser(null);
-              alert('User is unavailable or offline.');
-              try { socketManager.off('incomingCallDelivered', onDelivered); } catch (e) { }
-              try { socketManager.off('userUnavailable', onUserUnavailable); } catch (e) { }
-            }
-          } catch (e) { /* ignore */ }
-        };
-
-        // Attach temporary handlers
-        socketManager.on('incomingCallDelivered', onDelivered);
-        socketManager.on('userUnavailable', onUserUnavailable);
-
-        // Start timer
-        deliveryTimer = setTimeout(() => {
-          deliveryTimer = null;
-          console.warn('No incomingCallDelivered ack received - treating as unavailable');
-          callSoundPlayer.stopAll();
-          setInCall(false);
-          setCallType(null);
-          // Clear caller ringing state if any
-          setCallerRinging(false);
-          setRemoteRingingUser(null);
-          alert('No answer from recipient (timeout).');
-          try { socketManager.off('incomingCallDelivered', onDelivered); } catch (e) { }
-          try { socketManager.off('userUnavailable', onUserUnavailable); } catch (e) { }
-        }, DELIVERY_TIMEOUT_MS);
-
-        socketManager.emit('callUser', callData);
-        console.log('✓ Private call offer sent successfully (waiting for delivery ack)');
-      }
-
       setInCall(true);
+
+      // Delegate to CallManager
+      const targetLang = selectedUser?.preferredLanguage || 'hi';
+      await callManager.startCall(selectedUser.id, type, stream, currentLanguage, targetLang);
+
+      console.log('✓ Call initiated via CallManager');
     } catch (err) {
       console.error('Error starting call:', err);
+      setInCall(false);
       callSoundPlayer.stopAll();
-
-      if (err.name === 'NotAllowedError') {
-        alert('❌ Camera/microphone access denied. Please allow access in your browser settings and try again.');
-      } else if (err.name === 'NotFoundError') {
-        alert('❌ Camera/microphone not found. Please check your devices and try again.');
-      } else if (err.name === 'NotReadableError') {
-        alert('❌ Camera/microphone is already in use by another application. Please close other apps and try again.');
-      } else {
-        alert('❌ Failed to start call: ' + err.message);
-      }
-      endCall();
+      alert('Failed to start call: ' + err.message);
     }
   };
 
-  // Answer call
+  // Answer private call
   const answerCall = async () => {
+
     if (!incomingCall) return;
 
     try {
-      console.log('answerCall invoked, incomingCall:', incomingCall);
-      console.log('Socket connected?', !!socketManager.socket?.connected, 'socket id:', socketManager.socket?.id);
-
-      // Enable audio playback (user has interacted by clicking answer)
-      callSoundPlayer.enableUserInteraction();
-
-      // Close any active notifications
-      notificationManager.closeAllNotifications();
-
       setAcceptingCall(true);
       callSoundPlayer.stopAll();
-      setCallType(incomingCall.callType);
 
-      // CRITICAL: Set selected user to the caller so translation knows the target recipient
-      if (!selectedUser && incomingCall.from) {
-        // Robust ID comparison using toString()
-        const caller = users.find(u => (u.id || u._id || '').toString() === incomingCall.from.toString());
-        if (caller) {
-          console.log('✓ Automatically selecting caller for translation:', caller.username || caller.name);
-          setSelectedUser(caller);
-        } else {
-          // Create a minimal user object so translation works even if user not in local cache
-          console.log('ℹ️ Caller not in local cache, creating temporary profile for translation');
-          setSelectedUser({
-            id: incomingCall.from,
-            name: incomingCall.fromName || 'User',
-            username: incomingCall.fromName || 'User',
-            preferredLanguage: incomingCall.fromLanguage || 'en'
-          });
-        }
-      }
-
-      if (incomingCall.callSessionId) {
-        setActiveCallSession(incomingCall);
-        socketManager.emit('joinCallSession', { callSessionId: incomingCall.callSessionId });
-      } else {
-        setActiveCallSession(null);
-      }
-
-      // Get user media
       const constraints = {
         audio: true,
-        video: incomingCall.callType === 'video' ? {
-          width: { ideal: 1280 },
-          height: { ideal: 720 },
-          facingMode: 'user'
-        } : false
+        video: incomingCall.callType === 'video' ? { width: { ideal: 1280 }, height: { ideal: 720 } } : false
       };
 
-      console.log(`📞 Answering ${incomingCall.callType} call from ${incomingCall.fromName}...`);
       const stream = await navigator.mediaDevices.getUserMedia(constraints);
       setLocalStream(stream);
+      setCallType(incomingCall.callType);
+      setInCall(true);
+      setIncomingCall(null);
+      setAcceptingCall(false);
 
-      // Create peer connection
-      const pc = createPeerConnection();
-      peerConnectionRef.current = pc;
+      // Delegate to CallManager
+      const targetLang = incomingCall?.fromLanguage || 'en';
+      await callManager.answerCall(stream, currentLanguage, targetLang);
 
-      // Add tracks to peer connection
-      // For audio: use a silent track (original voice won't be sent)
-      // For video: use the actual video track
-      stream.getTracks().forEach(track => {
-        if (track.kind === 'audio') {
-          // Replace with silent audio track - original voice won't be sent
-          const silentTrack = createSilentAudioTrack();
-          pc.addTrack(silentTrack, stream);
-          console.log(`✓ Added SILENT audio track to peer connection (original voice muted)`);
-        } else {
-          // Add video track normally
-          pc.addTrack(track, stream);
-          console.log(`✓ Added ${track.kind} track to peer connection`);
-        }
-      });
-
-      // If there's no SDP offer (invitation-only group call), join the call session
-      // and wait for a real incoming offer to arrive. Otherwise proceed normally.
-      const waitingForOffer = !incomingCall.offer && !!incomingCall.callSessionId;
-
-      if (waitingForOffer) {
-        // Join call session so server marks us as active participant
-        socketManager.emit('joinCallSession', { callSessionId: incomingCall.callSessionId });
-
-        const handleOffer = async (data) => {
-          try {
-            // Ensure it's for the same session
-            if (data.callSessionId && data.callSessionId !== incomingCall.callSessionId) return;
-            if (!data.offer) return;
-
-            await pc.setRemoteDescription(new RTCSessionDescription(data.offer));
-            const answer = await pc.createAnswer();
-            await pc.setLocalDescription(answer);
-
-            socketManager.emit('answerCall', {
-              to: data.from,
-              answer: answer,
-              roomId: data.roomId,
-              callSessionId: data.callSessionId,
-              callRoomId: data.callRoomId
-            });
-
-            console.log('✓ Call answered successfully (after deferred offer)');
-
-            // Play connect beep sound
-            callSoundPlayer.playConnect().catch(err => {
-              console.log('Could not play connect sound:', err.message);
-            });
-
-            setInCall(true);
-            // Ensure sounds are stopped when the call becomes active
-            try { callSoundPlayer.stopAll(); } catch (e) { /* ignore */ }
-            setIncomingCall(null);
-          } catch (err) {
-            console.error('Error answering deferred offer:', err);
-            rejectCall();
-          } finally {
-            socketManager.off('incomingCall', handleOffer);
-          }
-        };
-
-        socketManager.on('incomingCall', handleOffer);
-
-        // Safety timeout to avoid hanging forever (shorter during testing)
-        setTimeout(() => {
-          try { socketManager.off('incomingCall', handleOffer); } catch (e) { }
-          console.warn('No offer received for deferred call; aborting');
-          setAcceptingCall(false);
-          rejectCall();
-        }, 8000);
-      } else {
-        // Normal answer flow with an offer
-        await pc.setRemoteDescription(new RTCSessionDescription(incomingCall.offer));
-        const answer = await pc.createAnswer();
-        await pc.setLocalDescription(answer);
-
-        socketManager.emit('answerCall', {
-          to: incomingCall.from,
-          answer: answer,
-          roomId: incomingCall.roomId,
-          callSessionId: incomingCall.callSessionId,
-          callRoomId: incomingCall.callRoomId
-        });
-
-        console.log('✓ Call answered successfully');
-
-        // Play connect beep sound
-        callSoundPlayer.playConnect().catch(err => {
-          console.log('Could not play connect sound:', err.message);
-        });
-
-        setInCall(true);
-        // Defensive: stop any remaining ringing/ringback
-        try { callSoundPlayer.stopAll(); } catch (e) { /* ignore */ }
-        setIncomingCall(null);
-        setAcceptingCall(false);
-      }
+      console.log('✓ Call answered via CallManager');
     } catch (err) {
       console.error('Error answering call:', err);
-      callSoundPlayer.stopAll();
-
-      if (err.name === 'NotAllowedError') {
-        alert('❌ Camera/microphone access denied. Please allow access and try again.');
-      } else if (err.name === 'NotFoundError') {
-        alert('❌ Camera/microphone not found. Please check your devices.');
-      } else if (err.name === 'NotReadableError') {
-        alert('❌ Camera/microphone is already in use. Please close other apps and try again.');
-      } else {
-        alert('❌ Failed to answer call: ' + err.message);
-      }
       setAcceptingCall(false);
-      rejectCall();
+      alert('Failed to answer call: ' + err.message);
     }
   };
+
 
   // Reject call
   const rejectCall = () => {
@@ -1647,66 +1191,21 @@ const Dashboard = () => {
 
   // End call
   const endCall = () => {
-    console.log('📴 Ending call');
-
-    // Stop all sounds first
+    console.log('🛑 Ending call');
     callSoundPlayer.stopAll();
-
-    // Close any active notifications
-    notificationManager.closeAllNotifications();
-
-    // Play disconnect sound (non-blocking, allow failures)
-    callSoundPlayer.playDisconnect().catch(() => {
-      console.log('Disconnect sound not played');
-    });
-
-    // Stop all tracks using state callbacks to avoid stale closures
-    setLocalStream(prevStream => {
-      if (prevStream) {
-        prevStream.getTracks().forEach(track => {
-          track.stop();
-          console.log(`✓ Stopped ${track.kind} track`);
-        });
-      }
-      return null;
-    });
-
-    setRemoteStream(prevStream => {
-      if (prevStream) {
-        prevStream.getTracks().forEach(track => track.stop());
-      }
-      return null;
-    });
-
-    // Close peer connection
-    if (peerConnectionRef.current) {
-      peerConnectionRef.current.close();
-      console.log('✓ Peer connection closed');
-    }
-
-    // Notify other peer
-    if (activeCallSession?.callSessionId) {
-      socketManager.emit('leaveCallSession', { callSessionId: activeCallSession.callSessionId });
-    }
-
-    if (inCall) {
-      if (selectedRoom) {
-        socketManager.emit('endCall', { roomId: selectedRoom._id, callSessionId: activeCallSession?.callSessionId });
-      } else if (selectedUser) {
-        socketManager.emit('endCall', { to: selectedUser.id, callSessionId: activeCallSession?.callSessionId });
-      }
-    }
-
-    // Reset state
+    
     setInCall(false);
-    setCallType(null);
-    setIsMuted(false);
-    setIsCameraOff(false);
-    peerConnectionRef.current = null;
-    setActiveCallSession(null);
+    setIncomingCall(null);
+    setLocalStream(null);
+    setRemoteStream(null);
+    
+    if (selectedUser) {
+      signalingService.emitEndCall({ to: selectedUser.id });
+    }
 
-    console.log('✓ Call ended successfully');
+    handleCallEndedLocally();
   };
+
 
   // Toggle mute
   const toggleMute = () => {
@@ -2132,10 +1631,11 @@ const Dashboard = () => {
               endCall={endCall}
               isMuted={isMuted}
               isCameraOff={isCameraOff}
-              peerConnection={peerConnectionRef.current}
-              socket={socketManager.socket}
               selectedUser={selectedUser}
-              activeCallSession={activeCallSession}
+              localOriginal={localOriginal}
+              localTranslated={localTranslated}
+              remoteOriginal={remoteOriginal}
+              remoteTranslated={remoteTranslated}
             />
           </div>
         ) : (selectedUser || selectedRoom) ? (

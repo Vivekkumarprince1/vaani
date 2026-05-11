@@ -322,5 +322,6 @@ module.exports = {
   translateSpeechDirect,
   translateSpeechToMultipleLanguages,
   toSpeechLocale,
-  toLanguageCode
+  toLanguageCode,
+  getTranslationConfig
 };

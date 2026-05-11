@@ -5,49 +5,16 @@
  * @param {Object} users - Active users object
  */
 const { translateSpeech, recognizeSpeech, translateText } = require('../utils/speechTranslator');
-// âœ… NEW: Import optimized Speech Translation SDK (single API call)
-const { translateSpeechDirect } = require('../utils/speechTranslationSDK');
-// Server-side metrics
+const { translateSpeechDirect, toSpeechLocale, toLanguageCode, getTranslationConfig } = require('../utils/speechTranslationSDK');
+const { getCachedOrSynthesize } = require('../utils/textToSpeechModule');
 const serverMetrics = require('../utils/performanceMetrics');
 
-/**
- * Compress audio data using simple downsampling for better stream handling
- * @param {Buffer} audioData - Raw audio buffer
- * @returns {Buffer} Compressed audio buffer
- */
-const compressAudio = (audioData) => {
-  // Simple compression: reduce sample rate by half (basic downsampling)
-  // For production, consider using Opus codec with node-opus library
-  if (!Buffer.isBuffer(audioData)) return audioData;
-  
-  const originalLength = audioData.length;
-  const compressed = Buffer.alloc(Math.floor(originalLength / 2));
-  
-  for (let i = 0; i < compressed.length; i++) {
-    compressed[i] = audioData[i * 2]; // Take every other byte
-  }
-  
-  console.log(`Audio compressed: ${originalLength} -> ${compressed.length} bytes`);
-  return compressed;
-};
-
 const handleAudioTranslation = (io, socket, users) => {
-  // Add event listener for client-side ready state
   socket.on('audioSystemReady', (data) => {
-    console.log('Client audio system ready:', data);
     socket.audioSystemReady = true;
   });
-  
-  // Handle compressed audio streams for better performance
-  socket.on('audioStream', (data) => {
-    // Compress audio data before processing
-    const compressed = compressAudio(data.audio);
-    // Continue with existing processing using compressed data
-    // ...existing handler...
-    console.log('Compressed audio stream received and processed');
-  });
-  
-  // NEW: Handle speech recognition only (voice-to-text)
+
+  // Handle speech recognition only (voice-to-text)
   socket.on('recognizeSpeech', async (data) => {
     try {
       const { audio, sourceLanguage, userId, requestId } = data;
@@ -284,10 +251,6 @@ const handleAudioTranslation = (io, socket, users) => {
       const finalTargetLanguage = receiverData.preferredLanguage || targetLanguage || 'en';
       console.log(`   ðŸŽ¯ Target language set to receiver's preference: ${finalTargetLanguage}`);
 
-      // Use the optimized direct speech translation (single API call)
-  const { translateSpeechDirect } = require('../utils/speechTranslationSDK');
-  const { getCachedOrSynthesize } = require('../utils/textToSpeechModule');
-
       // Partial callback to stream transcripts back
       // Emit partial results only to the sender (local). Do NOT forward
       // partial text-only results to the remote receiver so the remote
@@ -487,61 +450,55 @@ const handleAudioTranslation = (io, socket, users) => {
       console.log(`âœ… Complete: "${result.original}" â†’ "${result.translated}" (${translationTime}ms)`);
       
   // Generate TTS audio for the translated text
-      console.log(`ðŸ”Š TTS BLOCK REACHED - translated: "${result.translated}"`);
-      let ttsBuffer = null;
-      console.log(`ðŸ”Š Starting TTS for: "${result.translated}" in ${finalTargetLanguage}`);
+          let ttsBuffer = null;
       try {
-  console.log('Loading textToSpeech module...');
-  const ttsModule = require('../utils/textToSpeechModule');
-  console.log('textToSpeechModule loaded:', Object.keys(ttsModule));
-  const { getCachedOrSynthesize } = ttsModule;
-  console.log('getCachedOrSynthesize function loaded:', typeof getCachedOrSynthesize);
-  console.log('Calling getCachedOrSynthesize...');
         ttsBuffer = await getCachedOrSynthesize(result.translated, finalTargetLanguage);
-        console.log(`✅ TTS completed, buffer size: ${ttsBuffer ? ttsBuffer.length : 'null'} bytes`);
       } catch (ttsErr) {
-        console.error('❌ Text-to-speech failed:', ttsErr);
+        console.error('Text-to-speech failed:', ttsErr);
       }
       
-      if (ttsBuffer) {
-        console.log(`🔊 Audio buffer length: ${ttsBuffer.length} bytes`);
-      }
-      console.log(`📤 Sending audio: ${ttsBuffer ? 'YES' : 'NO'}`);
-      
-      // Send final result
-      // Record clientReceived timestamp just before emitting back
+      // Phase 1: Send text immediately so both parties can display subtitles
+      // without waiting for TTS synthesis.
       serverMetrics.recordTimestamp(serverMetric, 'clientReceived');
 
-      const finalResponseData = {
-        text: {
-          original: result.original,
-          translated: result.translated
-        },
-        audio: ttsBuffer, // Sending raw Buffer (binary)
+      const textOnlyPayload = {
+        text: { original: result.original, translated: result.translated },
+        audio: null,
         isLocal: true,
         targetLanguage: finalTargetLanguage,
         requestId,
         timestamp: startTime,
         partial: false,
-        metrics: {
-          speechTranslation: translationTime,
-          tts: ttsBuffer ? Date.now() - translationStartTime - translationTime : 0,
-          total: Date.now() - startTime,
-          server: serverMetric
-        }
+        audiocoming: true, // hint to client that audio will follow
+        metrics: { speechTranslation: translationTime, total: Date.now() - startTime, server: serverMetric }
       };
-      
-      socket.emit('translatedSpeech', finalResponseData);
-      
-  finalResponseData.isLocal = false;
-  io.to(receiverSocketId).emit('translatedSpeech', finalResponseData);
 
-  // Complete server metric tracking
-  serverMetrics.recordTimestamp(serverMetric, 'displayed');
-  serverMetrics.complete(serverMetric);
-      
+      socket.emit('translatedSpeech', textOnlyPayload);
+      textOnlyPayload.isLocal = false;
+      io.to(receiverSocketId).emit('translatedSpeech', textOnlyPayload);
+
+      // Phase 2: Send TTS audio once ready (non-blocking — client already has text)
+      if (ttsBuffer) {
+        const audioPayload = {
+          text: null,
+          audio: ttsBuffer,
+          isLocal: true,
+          targetLanguage: finalTargetLanguage,
+          requestId,
+          timestamp: startTime,
+          partial: false,
+          audioonly: true
+        };
+        socket.emit('translatedSpeech', audioPayload);
+        audioPayload.isLocal = false;
+        io.to(receiverSocketId).emit('translatedSpeech', audioPayload);
+      }
+
+      serverMetrics.recordTimestamp(serverMetric, 'displayed');
+      serverMetrics.complete(serverMetric);
+
       const totalTime = Date.now() - startTime;
-      console.log(`ðŸš€ Optimized pipeline: ${totalTime}ms (Speech Translation: ${translationTime}ms)`);
+      console.log(`Optimized pipeline: ${totalTime}ms (translation: ${translationTime}ms)`);
       // console.log(`   ðŸ’¡ Estimated savings: ~200-300ms vs separate STT+Translation`);
     } catch (error) {
       console.error('Error in optimized speech translation:', error);
@@ -551,6 +508,146 @@ const handleAudioTranslation = (io, socket, users) => {
       });
     }
   });
+
+  // --- STREAMING PCM HANDLERS ---
+
+  /**
+   * Start a continuous speech translation stream
+   */
+  socket.on('startTranslationStream', async (data) => {
+    const { sourceLanguage, targetLanguage, userId, requestId } = data;
+    console.log(`🚀 [STREAM] Starting translation stream: ${sourceLanguage} -> ${targetLanguage} (User: ${userId})`);
+
+    const receiverSocketId = Object.keys(users).find(key => users[key].userId === userId);
+    if (!receiverSocketId) {
+      console.error('Receiver not found:', userId);
+      socket.emit('error', { message: 'Receiver not found', requestId });
+      return;
+    }
+
+    const receiverData = users[receiverSocketId];
+    const finalTargetLanguage = receiverData.preferredLanguage || targetLanguage || 'en';
+
+    const sdk = require('microsoft-cognitiveservices-speech-sdk');
+
+    const sourceLocale = toSpeechLocale(sourceLanguage);
+    const targetCode = toLanguageCode(finalTargetLanguage);
+    const config = getTranslationConfig(sourceLocale, [targetCode]);
+
+    const pushStream = sdk.AudioInputStream.createPushStream(
+      sdk.AudioStreamFormat.getWaveFormatPCM(16000, 16, 1)
+    );
+    const audioConfig = sdk.AudioConfig.fromStreamInput(pushStream);
+    const recognizer = new sdk.TranslationRecognizer(config, audioConfig);
+
+    // Store in socket for later chunks
+    socket.translationStream = {
+      recognizer,
+      pushStream,
+      targetCode,
+      receiverSocketId,
+      requestId,
+      finalTargetLanguage
+    };
+
+    recognizer.recognizing = (s, e) => {
+      if (e.result.reason === sdk.ResultReason.TranslatingSpeech) {
+        const partial = {
+          text: {
+            original: e.result.text,
+            translated: e.result.translations.get(targetCode) || ''
+          },
+          isLocal: true,
+          partial: true,
+          requestId
+        };
+        socket.emit('translatedSpeech', partial);
+      }
+    };
+
+    recognizer.recognized = async (s, e) => {
+      if (e.result.reason === sdk.ResultReason.TranslatedSpeech) {
+        const original = e.result.text;
+        const translated = e.result.translations.get(targetCode) || '';
+        
+        if (!original) return;
+
+        console.log(`🎯 [STREAM] Recognized: "${original}" -> "${translated}"`);
+
+        // Generate TTS for the final recognized segment
+        let ttsBuffer = null;
+        try {
+          ttsBuffer = await getCachedOrSynthesize(translated, finalTargetLanguage);
+        } catch (err) {
+          console.error('TTS failed in stream:', err);
+        }
+
+        const finalData = {
+          text: { original, translated },
+          audio: ttsBuffer,
+          isLocal: true,
+          partial: false,
+          requestId,
+          timestamp: Date.now()
+        };
+
+        // Send to sender
+        socket.emit('translatedSpeech', finalData);
+
+        // Send to receiver
+        finalData.isLocal = false;
+        io.to(receiverSocketId).emit('translatedSpeech', finalData);
+      }
+    };
+
+    recognizer.canceled = (s, e) => {
+      console.warn(`⚠️ [STREAM] Canceled: ${e.reason}`);
+      if (e.reason === sdk.CancellationReason.Error) {
+        console.error(`Error details: ${e.errorDetails}`);
+      }
+    };
+
+    recognizer.sessionStopped = (s, e) => {
+      console.log('🏁 [STREAM] Session stopped');
+    };
+
+    recognizer.startContinuousRecognitionAsync(
+      () => console.log('✅ [STREAM] Continuous recognition started'),
+      (err) => console.error('❌ [STREAM] Failed to start recognition:', err)
+    );
+  });
+
+  /**
+   * Handle incoming PCM chunks
+   */
+  socket.on('audioChunk', (chunk) => {
+    if (socket.translationStream && socket.translationStream.pushStream) {
+      // chunk is expected to be an ArrayBuffer/Buffer of Int16 PCM
+      socket.translationStream.pushStream.write(chunk);
+    }
+  });
+
+  /**
+   * Stop the translation stream
+   */
+  socket.on('stopTranslationStream', () => {
+    if (socket.translationStream) {
+      const { recognizer, pushStream } = socket.translationStream;
+      pushStream.close();
+      recognizer.stopContinuousRecognitionAsync(
+        () => {
+          recognizer.close();
+          console.log('🛑 [STREAM] Translation stream stopped');
+        },
+        (err) => {
+          console.error('❌ [STREAM] Error stopping recognizer:', err);
+          recognizer.close();
+        }
+      );
+      socket.translationStream = null;
+    }
+  });
+
 };
 
 module.exports = handleAudioTranslation;

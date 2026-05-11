@@ -1,8 +1,8 @@
 
 import React from 'react';
 import { useTranslation } from '../contexts/TranslationContext';
-import useAudioProcessing from '../hooks/useAudioProcessing';
 import VideoStreams from './VideoCallComponents/VideoStreams';
+
 import CallControls from './VideoCallComponents/CallControls';
 
 /**
@@ -22,43 +22,20 @@ const VideoCall = ({
   endCall,
   isMuted,
   isCameraOff,
-  peerConnection,
-  socket,
-  selectedUser
+  selectedUser,
+  localOriginal,
+  localTranslated,
+  remoteOriginal,
+  remoteTranslated
 }) => {
   const { currentLanguage, languages } = useTranslation();
   
-  // Use our custom hook for audio processing and translation only when socket is connected
-  const audioProcessingEnabled = socket && socket.connected;
-  
-  const audioProcessingData = audioProcessingEnabled ? useAudioProcessing(
-    localStream,
-    remoteStream,
-    socket, 
-    selectedUser,
-    currentLanguage,
-    peerConnection
-  ) : {
-    localOriginal: '',
-    localTranslated: '',
-    remoteOriginal: '',
-    remoteTranslated: '',
-    callParticipant: null
-  };
-
-  const {
-    localOriginal,      // What I said in my language
-    localTranslated,    // What they heard (translated to their language)
-    remoteOriginal,     // What they said in their language
-    remoteTranslated,   // What I heard (translated to my language)
-    callParticipant
-  } = audioProcessingData;
-
   // Get language names for display
   const yourLanguageName = languages?.[currentLanguage]?.name || currentLanguage;
-  const theirLanguageName = callParticipant?.preferredLanguage 
-    ? (languages?.[callParticipant.preferredLanguage]?.name || callParticipant.preferredLanguage)
+  const theirLanguageName = selectedUser?.preferredLanguage 
+    ? (languages?.[selectedUser.preferredLanguage]?.name || selectedUser.preferredLanguage)
     : 'Their Language';
+
 
   return (
     <div className="relative h-[calc(100vh-220px)] rounded-lg p-4 overflow-hidden bg-black flex flex-col">

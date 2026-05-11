@@ -8,7 +8,8 @@ class CallSounds {
       ringtone: null,
       ringback: null,
       connect: null,
-      disconnect: null
+      disconnect: null,
+      busy: null
     };
     this.initialized = false;
     this.playingSound = null;
@@ -71,11 +72,19 @@ class CallSounds {
         audioElement.pause();
         audioElement.currentTime = 0;
       }
-      await audioElement.play();
+      
       this.playingSound = soundName;
+      await audioElement.play();
+      
+      // If sound was stopped while we were waiting for the play promise to resolve
+      if (this.playingSound !== soundName) return 'aborted';
+      
       console.log(`✓ Playing ${soundName}`);
       return true;
     } catch (err) {
+      // Return 'aborted' instead of false so we don't accidentally trigger the fallback beep
+      if (err.name === 'AbortError') return 'aborted';
+
       if (err.name !== 'NotAllowedError') {
         console.warn(`⚠️ Could not play ${soundName}:`, err.message);
       }
@@ -93,9 +102,13 @@ class CallSounds {
     this.playingSound = 'ringtone';
     const ok = await this.safePlay(this.sounds.ringtone, 'ringtone');
     
-    if (!ok && this.playingSound === 'ringtone') {
+    // Only start fallback loop if ok is strictly false (NotAllowedError), ignoring 'aborted'
+    if (ok === false && this.playingSound === 'ringtone') {
       await this.ensureAudioContext();
-      this._startGeneratedLoop(420, 'ringtone');
+      // Check state again after async gap to prevent ghost loops
+      if (this.playingSound === 'ringtone') {
+        this._startGeneratedLoop(420, 'ringtone');
+      }
     }
   }
 
@@ -111,9 +124,13 @@ class CallSounds {
     const ok = await this.safePlay(this.sounds.ringback, 'ringback');
     
     // Only start fallback if we are STILL supposed to be playing ringback
-    if (!ok && this.playingSound === 'ringback') {
+    // Only start fallback loop if ok is strictly false, ignoring 'aborted'
+    if (ok === false && this.playingSound === 'ringback') {
       await this.ensureAudioContext();
-      this._startGeneratedLoop(620, 'ringback');
+      // Check state again after async gap to prevent ghost loops
+      if (this.playingSound === 'ringback') {
+        this._startGeneratedLoop(620, 'ringback');
+      }
     }
   }
 
@@ -145,10 +162,32 @@ class CallSounds {
   }
 
   /**
+   * ⏳ Play busy tone (pulsed)
    * 🔄 Generated loop fallback for ringtone/ringback
    */
-  _startGeneratedLoop(freq, name) {
+  async playBusyTone() {
+    this.init();
+    this.stopAll();
+
+    this.playingSound = 'busy';
+    // Use generated tone for busy signal (standard 480Hz+620Hz or simple 440Hz pulsed)
+    await this.ensureAudioContext();
+    // Prevent forever beeping if the call is ended before the context resolves
+    if (this.playingSound === 'busy') {
+      this._startGeneratedLoop(440, 'busy', { interval: 500, pulseDuration: 450 });
+      console.log('✓ Playing busy tone');
+    }
+  }
+
+  /**
+   * 🔄 Generated loop fallback for ringtone/ringback/busy
+   */
+  _startGeneratedLoop(freq, name, options = {}) {
     if (!this.audioContext) return;
+    this._stopGeneratedLoop(); // Prevent orphaned oscillator loops and memory leaks
+
+    const interval = options.interval || 400;
+    const pulseDuration = options.pulseDuration || 80;
 
     try {
       const ac = this.audioContext;
@@ -169,11 +208,12 @@ class CallSounds {
         gain.gain.cancelScheduledValues(t);
         gain.gain.setValueAtTime(0.0001, t);
         gain.gain.linearRampToValueAtTime(0.7, t + 0.02);
+        gain.gain.linearRampToValueAtTime(0.0001, t + (pulseDuration / 1000));
         gain.gain.linearRampToValueAtTime(0.0001, t + 0.08);
       };
 
       pulse();
-      const timer = setInterval(pulse, 400);
+      const timer = setInterval(pulse, interval);
 
       this._loopOscillator = { osc, gain, timer };
       this.playingSound = name;
@@ -250,6 +290,7 @@ class CallSounds {
       this.sounds.ringtone.currentTime = 0;
     }
     if (this.playingSound === 'ringtone') this._stopGeneratedLoop();
+    if (this.playingSound === 'ringtone') this.playingSound = null;
   }
 
   stopRingback() {
@@ -258,6 +299,12 @@ class CallSounds {
       this.sounds.ringback.currentTime = 0;
     }
     if (this.playingSound === 'ringback') this._stopGeneratedLoop();
+    if (this.playingSound === 'ringback') this.playingSound = null;
+  }
+
+  stopBusyTone() {
+    if (this.playingSound === 'busy') this._stopGeneratedLoop();
+    if (this.playingSound === 'busy') this.playingSound = null;
   }
 
   getCurrentSound() {

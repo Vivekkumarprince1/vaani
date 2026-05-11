@@ -384,7 +384,10 @@ const Dashboard = () => {
           return;
         }
 
-        if (invitation.initiatorId === currentUserId) return;
+        if (invitation.initiatorId && String(invitation.initiatorId) === String(currentUserId)) {
+          console.log('[Dashboard] Ignoring group call initiated by self');
+          return;
+        }
 
         console.log('[Dashboard] Showing incoming group call:', invitation.roomName);
         setIncomingGroupCall(invitation);

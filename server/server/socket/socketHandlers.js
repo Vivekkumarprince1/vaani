@@ -50,6 +50,10 @@ module.exports = (io, users, rooms, findUserByUserId) => {
         socketId: socket.id
       });
       console.log(`✅ User registered: socketId=${socket.id}, userId=${userId}, username=${finalUsername}, lang=${preferredLanguage} - DB updated`);
+      
+      // Join a private room for this user to receive direct notifications regardless of active chat room
+      socket.join(`user_${userId}`);
+      console.log(`   🏠 Socket ${socket.id} joined private room: user_${userId}`);
     } catch (error) {
       console.error(`❌ Failed to update user status in DB for userId=${userId}:`, error);
     }

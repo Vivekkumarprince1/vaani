@@ -151,62 +151,44 @@ class GroupCallController {
           let notificationsSent = 0;
           const notifiedParticipants = new Set();
           
-              // Prepare payload matching frontend expectation (updated)
-              const payload = {
-                callId: groupCall._id,
-                callRoomId: groupCall.callRoomId,
-                roomId: groupCall.roomId._id,
-                roomName: groupCall.roomId.name,
-                callType: groupCall.callType,
-                initiator: {
-                  _id: groupCall.initiator._id,
-                  username: groupCall.initiator.username,
-                  email: groupCall.initiator.email
-                },
-                participants: groupCall.participants.map(p => ({
-                  userId: p.userId._id,
-                  status: p.status,
-                  username: p.userId.username
-                }))
-              };
+          // Prepare payload matching frontend expectation
+          const payload = {
+            callId: groupCall._id,
+            callRoomId: groupCall.callRoomId,
+            roomId: groupCall.roomId._id,
+            roomName: groupCall.roomId.name,
+            callType: groupCall.callType,
+            initiatorId: groupCall.initiator._id, // Top-level ID for easier filtering
+            initiator: {
+              _id: groupCall.initiator._id,
+              username: groupCall.initiator.username,
+              email: groupCall.initiator.email
+            },
+            participants: groupCall.participants.map(p => ({
+              userId: p.userId._id,
+              status: p.status,
+              username: p.userId.username
+            }))
+          };
           
-          // Fetch sockets in the chat room and notify each socket individually so we can exclude initiator
-          const roomSocketName = roomId.toString();
-          const socketsInRoom = await io.in(roomSocketName).fetchSockets();
-
-          if (socketsInRoom.length > 0) {
-            console.log(`   🎯 Found ${socketsInRoom.length} socket(s) in room ${roomSocketName}, sending individually (excluding initiator)`);
-          } else {
-            console.log(`   ℹ️ No sockets found in room ${roomSocketName}, will search all connected sockets`);
-          }
-
-          const allSockets = socketsInRoom.length > 0 ? socketsInRoom : Array.from(io.of('/').sockets.values());
-
-          // For each participant, find their sockets and emit the standard 'group_incoming_call' event, skipping initiator
+          // Notify each participant via their private user room
           room.participants.forEach(participantId => {
             const participantIdStr = participantId.toString();
 
-            // Skip initiator
+            // Skip initiator (they already know they started the call)
             if (participantIdStr === groupCall.initiator._id.toString()) {
               return;
             }
 
-            const participantSockets = allSockets.filter(socket => socket.user && socket.user.userId === participantIdStr);
-
-            if (participantSockets.length === 0) {
-              // No connected socket for this participant
-              return;
-            }
-
-            participantSockets.forEach(socket => {
-              console.log(`      ✅ Emitting 'group_incoming_call' to socket ${socket.id} for participant ${participantIdStr}`);
-              io.to(socket.id).emit('group_incoming_call', payload);
-              notificationsSent++;
-              notifiedParticipants.add(participantIdStr);
-            });
+            // Emit to the user's private room (which handles multiple tabs/devices automatically)
+            io.to(`user_${participantIdStr}`).emit('group_incoming_call', payload);
+            console.log(`      ✅ Sent 'group_incoming_call' to user room: user_${participantIdStr}`);
+            
+            notificationsSent++;
+            notifiedParticipants.add(participantIdStr);
           });
           
-          console.log(`   📤 Sent ${notificationsSent} notifications to ${notifiedParticipants.size} unique participants`);
+          console.log(`   📤 Dispatched notifications to ${notifiedParticipants.size} participants`);
           
           // Update notification flags for all notified participants
           groupCall.participants.forEach(participant => {
@@ -225,7 +207,6 @@ class GroupCallController {
         }
       } catch (err) {
         console.error('❌ Error emitting group call notification:', err);
-        console.error('Error details:', err.stack);
       }
 
       return res.status(201).json({

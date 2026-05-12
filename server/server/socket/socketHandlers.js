@@ -2,12 +2,13 @@ const handleAudioTranslation = require('./audioHandler');
 const handleGroupCallAudioTranslation = require('./groupCallAudioHandler');
 const User = require('../../lib/models/User');
 const Chat = require('../../lib/models/Chat');
+const Room = require('../../lib/models/Room');
 const participantManager = require('../sfu/ParticipantManager');
 const workerManager = require('../sfu/TranslationWorkerManager');
 
 const pendingCalls = new Map(); // Store pending private calls for reconnection
 
-module.exports = (io, users, rooms, findUserByUserId) => {
+module.exports = (io, users, rooms, findUserByUserId, userIdToSocketId) => {
   // Handle socket connections
   io.on('connection', async (socket) => {
     console.log('New client connected:', socket.id);
@@ -16,12 +17,13 @@ module.exports = (io, users, rooms, findUserByUserId) => {
     const username = socket.user.username || socket.user.user?.username || 'Unknown';
 
     // Clean up any existing connections for this userId (handle multiple devices/tabs)
-    Object.keys(users).forEach(sid => {
-      if (users[sid].userId === userId && sid !== socket.id) {
-        console.log(`🧹 Cleaning up old connection for userId=${userId}, oldSocketId=${sid}`);
-        delete users[sid];
+    if (userIdToSocketId[userId]) {
+      const oldSid = userIdToSocketId[userId];
+      if (oldSid !== socket.id) {
+        console.log(`[socketHandlers] Cleaning up old connection for userId=${userId}, oldSocketId=${oldSid}`);
+        delete users[oldSid];
       }
-    });
+    }
 
     // Store user connection - KEY BY SOCKET ID for proper lookup in audio handler
     // Fetch latest user data from DB to get saved language preference
@@ -43,6 +45,7 @@ module.exports = (io, users, rooms, findUserByUserId) => {
       lastActive: new Date(),
       preferredLanguage: preferredLanguage
     };
+    userIdToSocketId[userId] = socket.id;
 
     // Join a private room for this user to receive direct notifications regardless of active chat room
     socket.join(`user_${userId}`);
@@ -56,9 +59,9 @@ module.exports = (io, users, rooms, findUserByUserId) => {
         lastActive: new Date(),
         socketId: socket.id
       });
-      console.log(`✅ User registered: socketId=${socket.id}, userId=${userIdStr}, username=${finalUsername}, lang=${preferredLanguage} - DB updated`);
+      console.log(`[socketHandlers] User registered: socketId=${socket.id}, userId=${userIdStr}, username=${finalUsername}, lang=${preferredLanguage}`);
     } catch (error) {
-      console.error(`❌ Failed to update user status in DB for userId=${userId}:`, error);
+      console.error(`[socketHandlers] Failed to update user status in DB for userId=${userId}:`, error);
     }
 
     // Broadcast user online status
@@ -68,8 +71,8 @@ module.exports = (io, users, rooms, findUserByUserId) => {
     });
 
     // Initialize audio translation handlers
-    handleAudioTranslation(io, socket, users);
-    handleGroupCallAudioTranslation(io, socket, users);
+    handleAudioTranslation(io, socket, users, userIdToSocketId);
+    handleGroupCallAudioTranslation(io, socket, users, userIdToSocketId);
 
     // Re-emit any pending calls upon reconnection (handles browser refresh during ringing)
     const pendingCall = pendingCalls.get(userId);
@@ -144,32 +147,6 @@ module.exports = (io, users, rooms, findUserByUserId) => {
       });
     });
 
-    // Handle private messages
-    socket.on('sendMessage', async (data) => {
-      const { receiverId, content, roomId } = data;
-
-      const message = {
-        senderId: userId,
-        senderName: socket.user.username,
-        content,
-        timestamp: new Date(),
-        roomId
-      };
-
-      if (receiverId) {
-        // Private message
-        const receiverUser = findUserByUserId(receiverId);
-        if (receiverUser) {
-          io.to(receiverUser.socketId).emit('receiveMessage', message);
-        }
-      } else if (roomId) {
-        // Room message
-        socket.to(roomId).emit('receiveMessage', message);
-      }
-
-      // Send confirmation back to sender
-      socket.emit('messageSent', { success: true, message });
-    });
 
     // Client acknowledges that a message was delivered to them
     socket.on('messageDelivered', async (data) => {
@@ -279,8 +256,6 @@ module.exports = (io, users, rooms, findUserByUserId) => {
         // The REST /group-call/initiate is the preferred path; this covers direct socket initiations.
         (async () => {
           try {
-            const Chat = require('../../lib/models/Chat');
-            const Room = require('../../lib/models/Room');
             const room = await Room.findById(roomId).select('participants name').lean();
             if (!room) {
               console.warn(`[callUser] Room ${roomId} not found`);
@@ -302,10 +277,9 @@ module.exports = (io, users, rooms, findUserByUserId) => {
               const pIdStr = String(participantId);
               if (pIdStr === String(userId)) continue; // skip self
               io.to(`user_${pIdStr}`).emit('group_incoming_call', payload);
-              io.to(`user_${pIdStr}`).emit('groupCallIncoming', payload);
               sentCount++;
             }
-            console.log(`📤 [callUser] Notified ${sentCount} group members via user_ rooms for room ${roomId}`);
+            console.log(`[socketHandlers] [callUser] Notified ${sentCount} group members for room ${roomId}`);
           } catch (err) {
             console.error('Error emitting group incomingCall:', err);
           }
@@ -463,7 +437,12 @@ module.exports = (io, users, rooms, findUserByUserId) => {
       const participantList = [];
       for (const [uid, meta] of roomParticipants) {
         if (uid !== String(userId)) {
-          participantList.push({ userId: uid, username: meta.username, socketId: meta.socketId });
+          participantList.push({ 
+            userId: uid, 
+            username: meta.username, 
+            socketId: meta.socketId,
+            preferredLanguage: meta.preferredLanguage
+          });
         }
       }
       socket.emit('existingParticipants', { callRoomId, participants: participantList });
@@ -599,6 +578,9 @@ module.exports = (io, users, rooms, findUserByUserId) => {
         });
 
         // Clean up from memory immediately
+        if (userIdToSocketId[userId] === socket.id) {
+          delete userIdToSocketId[userId];
+        }
         delete users[socket.id];
       }
     });

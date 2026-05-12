@@ -3,13 +3,15 @@
  * @param {Object} io - Socket.IO instance
  * @param {Object} socket - Socket connection
  * @param {Object} users - Active users object
+ * @param {Object} userIdToSocketId - Map for O(1) lookups
  */
 const { translateSpeech, recognizeSpeech, translateText } = require('../utils/speechTranslator');
 const { translateSpeechDirect, toSpeechLocale, toLanguageCode, getTranslationConfig } = require('../utils/speechTranslationSDK');
 const { getCachedOrSynthesize } = require('../utils/textToSpeechModule');
 const serverMetrics = require('../utils/performanceMetrics');
+const sdk = require('microsoft-cognitiveservices-speech-sdk');
 
-const handleAudioTranslation = (io, socket, users) => {
+const handleAudioTranslation = (io, socket, users, userIdToSocketId) => {
   socket.on('audioSystemReady', (data) => {
     socket.audioSystemReady = true;
   });
@@ -18,9 +20,9 @@ const handleAudioTranslation = (io, socket, users) => {
   socket.on('recognizeSpeech', async (data) => {
     try {
       const { audio, sourceLanguage, userId, requestId } = data;
-      console.log('\nðŸŽ¤ [SPEECH RECOGNITION] Voice to Text Only');
-      console.log(`   ðŸ“ Language: ${sourceLanguage}`);
-      console.log(`   ðŸ†” Request: ${requestId || 'none'}`);
+      console.log('[audioHandler] [SPEECH RECOGNITION] Voice to Text Only');
+      console.log(`[audioHandler] Language: ${sourceLanguage}`);
+      console.log(`[audioHandler] Request: ${requestId || 'none'}`);
       
       // Validate input data
       if (!audio || audio.length < 100) {
@@ -33,9 +35,7 @@ const handleAudioTranslation = (io, socket, users) => {
       }
       
       // Find receiver's socket ID
-      const receiverSocketId = Object.keys(users).find(
-        key => users[key].userId === userId
-      );
+      const receiverSocketId = userIdToSocketId[userId];
       
       if (!receiverSocketId) {
         console.error('Receiver not found or not online:', userId);
@@ -75,7 +75,7 @@ const handleAudioTranslation = (io, socket, users) => {
         requestId
       });
       
-      console.log(`âœ… Speech recognized: "${recognizedText}"`);
+      console.log(`[audioHandler] Speech recognized: "${recognizedText}"`);
     } catch (error) {
       console.error('Error in speech recognition:', error);
       socket.emit('error', {
@@ -89,14 +89,12 @@ const handleAudioTranslation = (io, socket, users) => {
   socket.on('translateText', async (data) => {
     try {
       let { text, sourceLanguage, targetLanguage, userId, requestId } = data;
-      console.log('\nðŸ“ [TEXT TRANSLATION] Text Only');
-      console.log(`   ðŸ“ ${sourceLanguage} â†’ ${targetLanguage}`);
-      console.log(`   ðŸ†” Request: ${requestId || 'none'}`);
+      console.log('\n💬 [TEXT TRANSLATION] Text Only');
+      console.log(`   🌐 ${sourceLanguage} → ${targetLanguage}`);
+      console.log(`   🆔 Request: ${requestId || 'none'}`);
       
       // Find receiver's socket ID
-      const receiverSocketId = Object.keys(users).find(
-        key => users[key].userId === userId
-      );
+      const receiverSocketId = userIdToSocketId[userId];
       
       if (!receiverSocketId) {
         console.error('Receiver not found or not online:', userId);
@@ -111,7 +109,7 @@ const handleAudioTranslation = (io, socket, users) => {
       const receiverData = users[receiverSocketId];
       targetLanguage = receiverData.preferredLanguage || targetLanguage || 'en';
       
-      console.log(`   ðŸŽ¯ Target language set to receiver's preference: ${targetLanguage}`);
+      console.log(`[audioHandler] Target language set to receiver's preference: ${targetLanguage}`);
       
       // Validate input data
       if (!text || !text.trim()) {
@@ -147,7 +145,7 @@ const handleAudioTranslation = (io, socket, users) => {
         requestId
       });
       
-      console.log(`âœ… Text translated: "${text}" â†’ "${translatedText}"`);
+      console.log(`[audioHandler] Text translated: "${text}" -> "${translatedText}"`);
     } catch (error) {
       console.error('Error in text translation:', error);
       socket.emit('error', {
@@ -172,9 +170,7 @@ const handleAudioTranslation = (io, socket, users) => {
       }
 
       // Find the participant's socket
-      const participantSocketId = Object.keys(users).find(
-        key => users[key].userId === userId
-      );
+      const participantSocketId = userIdToSocketId[userId];
 
       if (!participantSocketId) {
         console.warn(`getCallParticipantInfo: User ${userId} not found in active users`);
@@ -196,7 +192,7 @@ const handleAudioTranslation = (io, socket, users) => {
         socketId: participantSocketId
       };
 
-      console.log('ðŸ“ž Sending call participant info:', participantInfo);
+      console.log('[audioHandler] Sending call participant info:', participantInfo);
 
       socket.emit('callParticipantInfo', {
         participantInfo,
@@ -217,12 +213,12 @@ const handleAudioTranslation = (io, socket, users) => {
 
     try {
       const { audio, sourceLanguage, targetLanguage, userId, requestId, timestamp } = data;
-      console.log('\nðŸŽ¯ [FULL SPEECH TRANSLATION - VOICE] Voice-to-Voice Pipeline');
-      console.log(`   ðŸ“ ${sourceLanguage} â†’ ${targetLanguage}`);
-
+      console.log('[audioHandler] [FULL SPEECH TRANSLATION - VOICE] Voice-to-Voice Pipeline');
+      console.log(`[audioHandler] ${sourceLanguage} -> ${targetLanguage}`);
+ 
       if (timestamp) {
         const clientLatency = startTime - timestamp;
-        console.log(`   â±ï¸  Client processing: ${clientLatency}ms`);
+        console.log(`[audioHandler] Client processing: ${clientLatency}ms`);
       }
 
       if (!audio || audio.length < 100) {
@@ -231,7 +227,7 @@ const handleAudioTranslation = (io, socket, users) => {
         return;
       }
 
-      const receiverSocketId = Object.keys(users).find(key => users[key].userId === userId);
+      const receiverSocketId = userIdToSocketId[userId];
       if (!receiverSocketId) {
         console.error('Receiver not found:', userId);
         socket.emit('error', { message: 'Receiver not found', requestId });
@@ -249,7 +245,7 @@ const handleAudioTranslation = (io, socket, users) => {
 
       const receiverData = users[receiverSocketId];
       const finalTargetLanguage = receiverData.preferredLanguage || targetLanguage || 'en';
-      console.log(`   ðŸŽ¯ Target language set to receiver's preference: ${finalTargetLanguage}`);
+      console.log(`[audioHandler] Target language set to receiver's preference: ${finalTargetLanguage}`);
 
       // Partial callback to stream transcripts back
       // Emit partial results only to the sender (local). Do NOT forward
@@ -311,14 +307,14 @@ const handleAudioTranslation = (io, socket, users) => {
       finalResponseData.isLocal = false;
       io.to(receiverSocketId).emit('translatedSpeech', finalResponseData);
 
-      console.log(`âœ… Voice-to-voice complete: "${result.original}" â†’ "${result.translated}" (${translateTime}ms)`);
+      console.log(`[audioHandler] Voice-to-voice complete: "${result.original}" -> "${result.translated}" (${translateTime}ms)`);
     } catch (error) {
       console.error('Error in voice-to-voice speech translation:', error);
       socket.emit('error', { message: 'Speech translation failed', requestId: data.requestId });
     }
   });
 
-  // âœ… NEW: Optimized Speech Translation using Azure Speech Translation SDK
+  // ✅ NEW: Optimized Speech Translation using Azure Speech Translation SDK
   // This is FASTER than separate STT + Translation (single API call)
   // Expected: 200-400ms faster than 'translateSpeech' event
   socket.on('translateSpeechOptimized', async (data) => {
@@ -326,13 +322,13 @@ const handleAudioTranslation = (io, socket, users) => {
     
     try {
       const { audio, sourceLanguage, targetLanguage, userId, requestId, timestamp } = data;
-      // console.log('\nðŸš€ [OPTIMIZED SPEECH TRANSLATION] Single API Call');
-      // console.log(`   ðŸ“ ${sourceLanguage} â†’ ${targetLanguage}`);
-      // console.log(`   ðŸ†” Request: ${requestId || 'none'}`);
+      // console.log('\n🚀 [OPTIMIZED SPEECH TRANSLATION] Single API Call');
+      // console.log(`   🌐 ${sourceLanguage} → ${targetLanguage}`);
+      // console.log(`   🆔 Request: ${requestId || 'none'}`);
       
       if (timestamp) {
         const clientLatency = startTime - timestamp;
-        console.log(`   â±ï¸  Client processing: ${clientLatency}ms`);
+        console.log(`   ⌛ Client processing: ${clientLatency}ms`);
       }
       
       if (!audio || audio.length < 100) {
@@ -344,9 +340,7 @@ const handleAudioTranslation = (io, socket, users) => {
         return;
       }
       
-      const receiverSocketId = Object.keys(users).find(
-        key => users[key].userId === userId
-      );
+      const receiverSocketId = userIdToSocketId[userId];
       
       if (!receiverSocketId) {
         console.error('Receiver not found:', userId);
@@ -402,7 +396,7 @@ const handleAudioTranslation = (io, socket, users) => {
           socket.emit('translatedTextPartial', partialData);
 
           if (!partial.isFinal) {
-            console.log(`âš¡ Partial text-only result sent to sender: "${partial.original}"`);
+            console.log(`[audioHandler] Partial text-only result sent to sender: "${partial.original}"`);
           }
         }
       };
@@ -447,7 +441,7 @@ const handleAudioTranslation = (io, socket, users) => {
         return;
       }
       
-      console.log(`âœ… Complete: "${result.original}" â†’ "${result.translated}" (${translationTime}ms)`);
+      console.log(`[audioHandler] Complete: "${result.original}" -> "${result.translated}" (${translationTime}ms)`);
       
   // Generate TTS audio for the translated text
           let ttsBuffer = null;
@@ -499,7 +493,7 @@ const handleAudioTranslation = (io, socket, users) => {
 
       const totalTime = Date.now() - startTime;
       console.log(`Optimized pipeline: ${totalTime}ms (translation: ${translationTime}ms)`);
-      // console.log(`   ðŸ’¡ Estimated savings: ~200-300ms vs separate STT+Translation`);
+      // console.log(`   💡 Estimated savings: ~200-300ms vs separate STT+Translation`);
     } catch (error) {
       console.error('Error in optimized speech translation:', error);
       socket.emit('error', {
@@ -518,7 +512,7 @@ const handleAudioTranslation = (io, socket, users) => {
     const { sourceLanguage, targetLanguage, userId, requestId } = data;
     console.log(`🚀 [STREAM] Starting translation stream: ${sourceLanguage} -> ${targetLanguage} (User: ${userId})`);
 
-    const receiverSocketId = Object.keys(users).find(key => users[key].userId === userId);
+    const receiverSocketId = userIdToSocketId[userId];
     if (!receiverSocketId) {
       console.error('Receiver not found:', userId);
       socket.emit('error', { message: 'Receiver not found', requestId });
@@ -527,8 +521,6 @@ const handleAudioTranslation = (io, socket, users) => {
 
     const receiverData = users[receiverSocketId];
     const finalTargetLanguage = receiverData.preferredLanguage || targetLanguage || 'en';
-
-    const sdk = require('microsoft-cognitiveservices-speech-sdk');
 
     const sourceLocale = toSpeechLocale(sourceLanguage);
     const targetCode = toLanguageCode(finalTargetLanguage);

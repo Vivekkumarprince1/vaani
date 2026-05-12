@@ -63,14 +63,16 @@ app.use('/api/livekit', livekitRoutes);
 const server = createServer(app);
 
 // Store active users and their rooms
-const users = {}; // Now keyed by socketId for proper audio translation lookup
+const users = {}; // Keyed by socketId
+const userIdToSocketId = {}; // Keyed by userId for O(1) lookups
 // Expose the in-memory connected users map to other modules (for online-only APIs)
 global.__connectedUsers = users;
 const rooms = {};
 
 // Helper function to find user by userId
 const findUserByUserId = (userId) => {
-  return Object.values(users).find(user => user.userId === userId);
+  const socketId = userIdToSocketId[userId];
+  return socketId ? users[socketId] : null;
 };
 
 // Initialize Socket.IO with OPTIMIZED settings for low latency
@@ -141,7 +143,7 @@ io.use((socket, next) => {
 });
 
 // Socket event handlers
-socketHandlers(io, users, rooms, findUserByUserId);
+socketHandlers(io, users, rooms, findUserByUserId, userIdToSocketId);
 
 // Cleanup stale connections every 5 minutes
 setInterval(() => {
@@ -151,8 +153,8 @@ setInterval(() => {
     const socket = io.sockets.sockets.get(socketId);
     if (!socket) {
       console.log(`Removing stale user: socketId=${socketId}, userId=${user?.userId}`);
+      if (user?.userId) delete userIdToSocketId[user.userId];
       delete users[socketId];
-      
     }
   });
 }, 5 * 60 * 1000);

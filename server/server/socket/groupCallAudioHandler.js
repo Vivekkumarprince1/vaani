@@ -9,8 +9,9 @@
 const orchestrator = require('../translation/TranslationOrchestrator');
 const { translateText } = require('../utils/speechTranslator');
 const { textToSpeech } = require('../utils/textToSpeechModule');
+const { config } = require('../utils/env');
 
-const handleGroupCallAudioTranslation = (io, socket, users) => {
+const handleGroupCallAudioTranslation = (io, socket, users, userIdToSocketId) => {
 
   socket.on('groupCallRecognizeSpeech', async (data) => {
     const { audio, sourceLanguage, callRoomId, requestId } = data;
@@ -58,7 +59,6 @@ const handleGroupCallAudioTranslation = (io, socket, users) => {
   // On-demand text translation for a single listener (unchanged behavior,
   // but audio omitted from response when LiveKit audio tracks are active)
   socket.on('groupCallTranslateText', async (data) => {
-    const { config } = require('../utils/env');
     try {
       const { text, sourceLanguage, targetLanguage, speakerId, speakerName, requestId } = data;
 

@@ -59,7 +59,9 @@ class MessageController {
         clientTempId: clientTempId || null
       };
 
-      // 🔥 ZERO-LATENCY EMIT: Fire the socket event BEFORE the database save
+      // 🔥 ZERO-LATENCY EMIT: Fire the socket event BEFORE the database save.
+      // This ensures the message reaches the recipient as fast as possible.
+      // The client will correlate this message using the clientTempId.
       try {
         const io = global.__io;
         if (io) {

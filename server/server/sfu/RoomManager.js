@@ -96,6 +96,22 @@ class RoomManager {
     return this._getParticipantMeta(callRoomId, userId)?.socketId ?? null;
   }
 
+  /**
+   * Find which callRoomId a userId is currently in.
+   *
+   * @param {string} userId
+   * @returns {string|null} callRoomId or null
+   */
+  findRoomForUser(userId) {
+    const uidStr = String(userId);
+    for (const [callRoomId, room] of this._rooms.entries()) {
+      if (room.participants.has(uidStr)) {
+        return callRoomId;
+      }
+    }
+    return null;
+  }
+
   // ── Internal ──────────────────────────────────────────────────────────────
 
   _getParticipantMeta(callRoomId, userId) {

@@ -1247,88 +1247,43 @@ const Dashboard = () => {
   const sendMessage = async (messageText) => {
     if (!messageText.trim()) return;
 
+    const clientTempId = `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+    const optimisticMessage = {
+      _id: clientTempId,
+      id: clientTempId,
+      clientTempId,
+      sender: { _id: user?._id || user?.id, username: user?.username || user?.name },
+      content: messageText,
+      originalContent: messageText,
+      timestamp: new Date().toISOString(),
+      status: 'queued',
+      room: selectedRoom?._id || null,
+      receiver: selectedUser?.id || null,
+      isGroupMessage: Boolean(selectedRoom)
+    };
+
+    // Add optimistic message to UI immediately
+    setMessages(prev => [...prev, optimisticMessage]);
+
     try {
       const token = localStorage.getItem('token');
-      // clientTempId helps correlate optimistic UI messages with the server-emitted saved message
-      const clientTempId = `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
-      // Create optimistic (queued) message in local state so UI shows queued immediately
-      const optimisticMessage = {
-        _id: clientTempId, // temporary id until server provides real _id
-        id: clientTempId,
-        clientTempId,
-        sender: { _id: user?._id || user?.id, username: user?.username || user?.name },
-        content: messageText,
-        originalContent: messageText,
-        timestamp: new Date().toISOString(),
-        status: 'queued',
-        room: selectedRoom?._id || null,
-        receiver: selectedUser?.id || null,
-        isGroupMessage: Boolean(selectedRoom)
-      };
-      setMessages(prev => [...prev, optimisticMessage]);
-
       const payload = {
         content: messageText,
         clientTempId,
         ...(selectedUser ? { receiverId: selectedUser.id } : { roomId: selectedRoom._id })
       };
 
-      // Note: avoid emitting a pre-save socket message here.
-      // The API will save the message and emit the saved/populated message to sockets.
-
-      // Save to database via API (always). We'll prefer the server-emitted socket message which includes _id.
-      const resPromise = axios.post(`${API_URL}/chat/message`, payload, {
+      // Save to database via API. 
+      // The server will emit 'receiveMessage' via socket, which is handled by our global listener.
+      // That listener will replace this optimistic message with the persisted one using clientTempId.
+      await axios.post(`${API_URL}/chat/message`, payload, {
         headers: { 'x-auth-token': token }
       });
 
-      // Wait briefly for the server to emit the saved message via socket (which includes the _id and clientTempId)
-      const savedViaSocket = await new Promise((resolve) => {
-        let resolved = false;
-        const timeout = setTimeout(async () => {
-          if (resolved) return;
-          resolved = true;
-          try {
-            const res = await resPromise;
-            resolve(res.data);
-          } catch (err) {
-            resolve(null);
-          }
-        }, 700); // 700ms timeout to prefer socket delivery
-
-        const handler = (msg) => {
-          if (msg && msg.clientTempId === clientTempId) {
-            if (!resolved) {
-              resolved = true;
-              clearTimeout(timeout);
-              resolve(msg);
-            }
-          }
-        };
-
-        // Listen temporarily for socket-delivered saved message
-        socketManager.on('receiveMessage', handler);
-      });
-
-      if (savedViaSocket) {
-        // Server already emitted the saved message; append it (dedupe in handler will ignore duplicates)
-        // Remove optimistic queued message if present (handler dedupe will avoid duplicates; still clear input)
-        setMessage('');
-      } else {
-        // Fallback: use API response
-        try {
-          const res = await resPromise;
-          setMessages(prev => {
-            const id = res.data._id || res.data.id || `${res.data.timestamp}-${res.data.sender}`;
-            if (prev.some(m => (m._id || m.id) === id)) return prev;
-            return [...prev, res.data];
-          });
-        } catch (err) {
-          console.error('Error saving message fallback:', err);
-        }
-        setMessage('');
-      }
     } catch (err) {
       console.error('Error sending message:', err);
+      // Remove the optimistic message if it failed to save
+      setMessages(prev => prev.filter(m => m.clientTempId !== clientTempId));
       alert('Failed to send message. Please try again.');
     }
   };

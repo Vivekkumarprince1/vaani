@@ -60,13 +60,7 @@ class ParticipantManager {
    * @returns {string|null} callRoomId or null
    */
   findRoomForUser(userId) {
-    // RoomManager doesn't expose internal map directly; iterate via its API
-    for (const [callRoomId] of roomManager._rooms) {
-      if (roomManager.getParticipant(callRoomId, userId)) {
-        return callRoomId;
-      }
-    }
-    return null;
+    return roomManager.findRoomForUser(userId);
   }
 
   getParticipant(callRoomId, userId) {

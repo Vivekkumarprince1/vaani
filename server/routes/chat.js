@@ -40,7 +40,7 @@ router.post('/group-call/initiate', authenticate, GroupCallController.initiate);
 router.get('/group-call/:callId', authenticate, GroupCallController.getCall);
 router.post('/group-call/:callId/decline', authenticate, GroupCallController.decline);
 router.post('/group-call/:callId/join', authenticate, GroupCallController.join);
-router.get('/group-call/:callId/leave', authenticate, GroupCallController.leave);
+router.post('/group-call/:callId/leave', authenticate, GroupCallController.leave);
 
 router.get('/history', authenticate, HistoryController.getHistory);
 router.get('/unread-counts', authenticate, HistoryController.getUnreadCounts);

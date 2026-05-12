@@ -1,11 +1,21 @@
 import { useState, useEffect, useRef } from 'react';
-import { createOptimizedAudioContext, hasSound, convertToInt16, createWavBuffer, convertToBase64 } from '../utils/audioProcessing';
+import { convertToInt16, createWavBuffer } from '../utils/audioProcessing';
 import performanceMetrics from '../utils/performanceMetrics';
 
-
 /**
- * Simplified group call audio processing hook
- * Based on 1-to-1 calling pattern: voice â†’ text â†’ broadcast text â†’ translate â†’ display text
+ * useGroupCallAudioProcessing (AudioWorklet edition)
+ *
+ * Captures local microphone audio, accumulates frames until silence is detected,
+ * then sends a WAV buffer to the server via Socket.IO for STT + translation.
+ *
+ * When useLiveKitAudioTracks=true (server USE_LIVEKIT_AUDIO_TRACKS flag is on):
+ *   - TTS audio arrives via LiveKit tracks (useTranslatedAudioTrack hook)
+ *   - This hook only handles audio capture + transcript state updates
+ *   - Listens to 'groupCallTranslatedText' (text-only, no audio payload)
+ *
+ * When useLiveKitAudioTracks=false (fallback / dev mode):
+ *   - TTS audio arrives via Socket.IO 'groupCallTranslatedSpeech' event
+ *   - This hook drives the TTS playback queue as before
  */
 const useGroupCallAudioProcessing = (
   localStream,
@@ -13,357 +23,262 @@ const useGroupCallAudioProcessing = (
   callRoomId,
   currentLanguage,
   currentUserId,
-  isMuted = false
+  isMuted = false,
+  useLiveKitAudioTracks = false
 ) => {
   const [transcripts, setTranscripts] = useState([]);
 
-  // Audio processing refs
   const audioContextRef = useRef(null);
   const sourceNodeRef = useRef(null);
-  const processorNodeRef = useRef(null);
+  const workletNodeRef = useRef(null);
 
-  // Track processed text to prevent duplicates
-  const processedTextIdsRef = useRef(new Set());
-
-  // Performance metrics for profiling group call overhead
-  const currentMetricRef = useRef(null);
-
-  // TTS playback queue (per-room sequential playback to avoid overlap)
-  const ttsQueueRef = useRef([]); // array of { base64, meta }
+  // TTS playback queue (sequential to prevent overlapping audio)
+  const ttsQueueRef = useRef([]);
   const isPlayingRef = useRef(false);
-  const runnerRunningRef = useRef(false);
   const currentAudioElRef = useRef(null);
 
-  // Handle mute state changes
+  // ── Audio capture setup / teardown ────────────────────────────────────────
+
   useEffect(() => {
-    if (isMuted) {
-      console.log('ðŸ”‡ User muted, stopping audio processing');
-      cleanupAudioProcessing();
-    } else if (localStream && socket?.connected) {
-      console.log('ðŸ”Š User unmuted, starting audio processing');
-      setupAudioProcessing();
+    if (!localStream || !socket?.connected || isMuted) {
+      cleanupAudioCapture();
+      return;
     }
-  }, [isMuted]);
 
-  // Initialize audio processing for local stream only
-  useEffect(() => {
-    if (!localStream || !socket?.connected || isMuted) return;
-
-    setupAudioProcessing();
-
-    return () => {
-      cleanupAudioProcessing();
-  //   };
-  // }, [localStream, socket, callRoomId]);
-      cleanupAudioProcessing();
-    };
+    setupAudioCapture();
+    return cleanupAudioCapture;
   }, [localStream, socket, callRoomId, isMuted]);
 
-  // Setup audio processing (same as 1-to-1 calling)
-  const setupAudioProcessing = async () => {
+  const setupAudioCapture = async () => {
     try {
-      // Initialize audio context
-      audioContextRef.current = createOptimizedAudioContext();
       const audioTrack = localStream.getAudioTracks()[0];
+      if (!audioTrack) return;
 
-      if (!audioTrack) {
-        console.error('No audio track found');
-        return;
-      }
-
+      // 16 kHz matches Azure STT preferred sample rate
+      audioContextRef.current = new AudioContext({ sampleRate: 16000 });
       sourceNodeRef.current = audioContextRef.current.createMediaStreamSource(
         new MediaStream([audioTrack])
       );
 
-      setupScriptProcessor();
-    } catch (error) {
-      console.error('Audio processing setup failed:', error);
+      // Attempt AudioWorklet (modern, non-deprecated)
+      try {
+        await audioContextRef.current.audioWorklet.addModule('/worklets/VaaniProcessor.js');
+        workletNodeRef.current = new AudioWorkletNode(audioContextRef.current, 'vaani-processor');
+
+        let audioBuffer = [];
+        let silenceCounter = 0;
+        const SILENCE_THRESHOLD = 10; // ~10 callbacks ≈ 460ms
+        const MIN_SAMPLES = audioContextRef.current.sampleRate * 0.5; // 0.5 s
+
+        const hasSound = (data) => data.some((s) => Math.abs(s) > 0.005);
+
+        workletNodeRef.current.port.onmessage = (event) => {
+          if (!socket?.connected) return;
+
+          // VaaniProcessor posts raw Float32Array chunks
+          const pcmChunk = event.data instanceof Float32Array ? event.data : new Float32Array(event.data);
+          const chunkHasSound = hasSound(pcmChunk);
+
+          if (chunkHasSound) {
+            audioBuffer.push(...Array.from(pcmChunk));
+            silenceCounter = 0;
+          } else if (audioBuffer.length > 0) {
+            silenceCounter++;
+            if (silenceCounter >= SILENCE_THRESHOLD && audioBuffer.length >= MIN_SAMPLES) {
+              const chunk = Float32Array.from(audioBuffer);
+              audioBuffer = [];
+              silenceCounter = 0;
+              _sendAudioForRecognition(chunk);
+            }
+          }
+        };
+
+        sourceNodeRef.current.connect(workletNodeRef.current);
+        // Do not connect to destination — we only need the port messages
+        console.log('[useGroupCallAudioProcessing] AudioWorklet connected');
+      } catch (workletErr) {
+        // Fallback: ScriptProcessor (deprecated but still widely supported)
+        console.warn('[useGroupCallAudioProcessing] AudioWorklet unavailable, falling back to ScriptProcessor:', workletErr.message);
+        _setupScriptProcessorFallback();
+      }
+    } catch (err) {
+      console.error('[useGroupCallAudioProcessing] Setup failed:', err);
     }
   };
 
-  // Script processor for local audio with instant recognition
-  const setupScriptProcessor = () => {
-    // Use smaller buffer size for faster processing (2048 = ~46ms at 44.1kHz)
-    processorNodeRef.current = audioContextRef.current.createScriptProcessor(2048, 1, 1);
+  const _setupScriptProcessorFallback = () => {
+    const ctx = audioContextRef.current;
+    // eslint-disable-next-line no-console
+    console.warn('[useGroupCallAudioProcessing] Using deprecated ScriptProcessor');
+    const processor = ctx.createScriptProcessor(2048, 1, 1);
+    workletNodeRef.current = processor;
+
     let audioBuffer = new Float32Array();
-    let isProcessing = false;
     let silenceCounter = 0;
-    const SILENCE_THRESHOLD = 10; // ~460ms of silence before sending
-    const MIN_AUDIO_LENGTH = audioContextRef.current.sampleRate * 0.5; // Minimum 0.5 seconds
+    const SILENCE_THRESHOLD = 10;
+    const MIN_SAMPLES = ctx.sampleRate * 0.5;
 
-    processorNodeRef.current.onaudioprocess = (e) => {
-      // Skip if not connected or already processing
-      if (!socket?.connected || isProcessing) return;
+    const hasSound = (data) => data.some((s) => Math.abs(s) > 0.005);
 
+    processor.onaudioprocess = (e) => {
+      if (!socket?.connected) return;
       const inputData = e.inputBuffer.getChannelData(0);
-      
-      // Check if current chunk has sound
-      const hasCurrentSound = hasSound(inputData);
-      
-      if (hasCurrentSound) {
-        // Add audio data to buffer
-        const newBuffer = new Float32Array(audioBuffer.length + inputData.length);
-        newBuffer.set(audioBuffer);
-        newBuffer.set(inputData, audioBuffer.length);
-        audioBuffer = newBuffer;
-        silenceCounter = 0; // Reset silence counter when sound is detected
+      if (hasSound(inputData)) {
+        const next = new Float32Array(audioBuffer.length + inputData.length);
+        next.set(audioBuffer);
+        next.set(inputData, audioBuffer.length);
+        audioBuffer = next;
+        silenceCounter = 0;
       } else if (audioBuffer.length > 0) {
-        // Increment silence counter
         silenceCounter++;
-        
-        // If we have enough silence and minimum audio length, process the audio
-        if (silenceCounter >= SILENCE_THRESHOLD && audioBuffer.length >= MIN_AUDIO_LENGTH) {
-          isProcessing = true;
-          const bufferToProcess = audioBuffer;
-          audioBuffer = new Float32Array(); // Clear buffer immediately
+        if (silenceCounter >= SILENCE_THRESHOLD && audioBuffer.length >= MIN_SAMPLES) {
+          const chunk = audioBuffer;
+          audioBuffer = new Float32Array();
           silenceCounter = 0;
-          
-          sendAudioForRecognition(bufferToProcess)
-            .finally(() => {
-              isProcessing = false;
-            });
+          _sendAudioForRecognition(chunk);
         }
       }
     };
 
-    sourceNodeRef.current.connect(processorNodeRef.current);
-    processorNodeRef.current.connect(audioContextRef.current.destination);
+    sourceNodeRef.current.connect(processor);
+    processor.connect(ctx.destination);
   };
 
-  // Send local audio for speech recognition (same as 1-to-1 calling)
-  const sendAudioForRecognition = async (audioData) => {
-    try {
-      // Start performance tracking for group call overhead reduction
-      const requestId = `group-${Date.now()}`;
-      currentMetricRef.current = performanceMetrics.startTracking(requestId);
-      performanceMetrics.recordTimestamp(currentMetricRef.current, 'audioCapture');
-
-      // Don't process audio if user is muted
-      if (isMuted) {
-        console.log('ðŸ”‡ User is muted, skipping audio processing');
-        return;
-      }
-
-      // Check socket connection before proceeding
-      if (!socket?.connected) {
-        console.warn('Socket not connected, cannot send audio for speech recognition');
-        return;
-      }
-
-      console.log('ðŸ“¤ Sending local audio for group call speech recognition');
-
-      // Convert to PCM and create WAV buffer
-      const pcmData = convertToInt16(audioData);
-      const wavBuffer = createWavBuffer(pcmData);
-      // Send to server for speech recognition
-      // OPTIMIZED: Send raw binary (Uint8Array) instead of base64
-      socket.emit('groupCallRecognizeSpeech', {
-        audio: wavBuffer, // binary Uint8Array
-        sourceLanguage: currentLanguage,
-        callRoomId,
-        requestId
-      });
-
-      // Complete metric after sending
-      performanceMetrics.recordTimestamp(currentMetricRef.current, 'serverReceived');
-      performanceMetrics.complete(currentMetricRef.current);
-    } catch (error) {
-      console.error('Error sending audio for group call speech recognition:', error);
-    }
-  };
-
-  // Cleanup functions
-  const cleanupAudioProcessing = () => {
-    if (processorNodeRef.current) {
-      processorNodeRef.current.disconnect();
-      processorNodeRef.current = null;
+  const cleanupAudioCapture = () => {
+    if (workletNodeRef.current) {
+      try { workletNodeRef.current.disconnect(); } catch (e) {}
+      workletNodeRef.current = null;
     }
     if (sourceNodeRef.current) {
-      sourceNodeRef.current.disconnect();
+      try { sourceNodeRef.current.disconnect(); } catch (e) {}
       sourceNodeRef.current = null;
+    }
+    if (audioContextRef.current) {
+      try { audioContextRef.current.close(); } catch (e) {}
+      audioContextRef.current = null;
     }
   };
 
+  // ── Send audio to server ──────────────────────────────────────────────────
 
+  const _sendAudioForRecognition = (audioData) => {
+    try {
+      if (isMuted || !socket?.connected) return;
 
-  // Set up audio translation event listeners
-  useEffect(() => {
-    if (!socket || !socket.connected) {
-      console.log('Socket not available or not connected, skipping audio processing setup');
-      return;
+      const requestId = `group-${Date.now()}`;
+      const metric = performanceMetrics.startTracking(requestId);
+      performanceMetrics.recordTimestamp(metric, 'audioCapture');
+
+      const pcmData = convertToInt16(audioData);
+      const wavBuffer = createWavBuffer(pcmData);
+
+      socket.emit('groupCallRecognizeSpeech', {
+        audio: wavBuffer,
+        sourceLanguage: currentLanguage,
+        callRoomId,
+        requestId,
+      });
+
+      performanceMetrics.recordTimestamp(metric, 'serverReceived');
+      performanceMetrics.complete(metric);
+    } catch (err) {
+      console.error('[useGroupCallAudioProcessing] Send failed:', err);
     }
+  };
 
-    // Handle recognized speech from other participants
-    const handleOriginalText = ({ text, sourceLanguage, speakerId, speakerName, requestId }) => {
-      console.log(`ðŸ“ Received original text from ${speakerName}: "${text}"`);
+  // ── Socket event listeners (translation results) ──────────────────────────
 
-      // Add to transcripts
-      setTranscripts(prev => [...prev, {
-        userId: speakerId,
-        username: speakerName,
-        text,
-        isTranslated: false,
-        language: sourceLanguage,
-        timestamp: new Date()
-      }].slice(-50));
+  useEffect(() => {
+    if (!socket?.connected) return;
+
+    const handleOriginalText = ({ text, sourceLanguage, speakerId, speakerName }) => {
+      setTranscripts((prev) => [
+        ...prev,
+        { userId: speakerId, username: speakerName, text, isTranslated: false, language: sourceLanguage, timestamp: new Date() },
+      ].slice(-50));
     };
 
-    // Handle translated text
-    // NEW: Handle combined translated speech (text + server-side TTS audio)
-    const handleTranslatedSpeech = ({
-      translatedText,
-      originalText,
-      audio,
-      speakerId,
-      speakerName,
-      targetLanguage,
-      requestId
-    }) => {
-      console.log(`🌍 Received translated speech from ${speakerName}: "${translatedText}"`);
-
-      // Add translated text to transcripts
-      setTranscripts(prev => [...prev, {
-        userId: speakerId,
-        username: speakerName,
-        text: translatedText,
-        isTranslated: true,
-        language: targetLanguage,
-        timestamp: new Date()
-      }].slice(-50));
-
-      // If audio is provided, enqueue it for sequential playback to avoid overlaps
-      if (audio) {
-        try {
-          // OPTIMIZED: Audio is now received as binary (ArrayBuffer/Buffer)
-          enqueueTtsAudio(audio, { speakerId, speakerName, requestId, targetLanguage });
-        } catch (err) {
-          console.error('Failed to enqueue TTS audio:', err);
-        }
-      }
+    const handleError = ({ message }) => {
+      console.error('[useGroupCallAudioProcessing] Server error:', message);
     };
 
-    // Handle errors
-    const handleError = ({ message, requestId }) => {
-      console.error(`âŒ Group call error: ${message}`);
-    };
-
-    // Register listeners
-  socket.on('groupCallOriginalText', handleOriginalText);
-  socket.on('groupCallTranslatedSpeech', handleTranslatedSpeech);
+    socket.on('groupCallOriginalText', handleOriginalText);
     socket.on('groupCallError', handleError);
+
+    let cleanup;
+    if (useLiveKitAudioTracks) {
+      // Path A: audio comes via LiveKit tracks — only update transcript state
+      const handleTranslatedText = ({ translatedText, speakerId, speakerName, targetLanguage }) => {
+        setTranscripts((prev) => [
+          ...prev,
+          { userId: speakerId, username: speakerName, text: translatedText, isTranslated: true, language: targetLanguage, timestamp: new Date() },
+        ].slice(-50));
+      };
+      socket.on('groupCallTranslatedText', handleTranslatedText);
+      cleanup = () => socket.off('groupCallTranslatedText', handleTranslatedText);
+    } else {
+      // Path B: audio comes via Socket.IO buffer — update transcripts + drive TTS queue
+      const handleTranslatedSpeech = ({ translatedText, speakerId, speakerName, targetLanguage, audio }) => {
+        setTranscripts((prev) => [
+          ...prev,
+          { userId: speakerId, username: speakerName, text: translatedText, isTranslated: true, language: targetLanguage, timestamp: new Date() },
+        ].slice(-50));
+        if (audio) _enqueueTts(audio);
+      };
+      socket.on('groupCallTranslatedSpeech', handleTranslatedSpeech);
+      cleanup = () => {
+        socket.off('groupCallTranslatedSpeech', handleTranslatedSpeech);
+        _stopTts();
+      };
+    }
 
     return () => {
       socket.off('groupCallOriginalText', handleOriginalText);
-      socket.off('groupCallTranslatedSpeech', handleTranslatedSpeech);
       socket.off('groupCallError', handleError);
-      // stop any queued TTS playback on unmount
-      stopAndCleanupTts();
+      cleanup?.();
     };
-  }, [socket, currentLanguage, currentUserId, callRoomId]);
+  }, [socket, currentLanguage, callRoomId, useLiveKitAudioTracks]);
 
+  // ── TTS sequential playback queue ────────────────────────────────────────
 
-  // Utility: convert base64 to Blob (client-side)
-  const b64toBlob = (b64Data, contentType = '', sliceSize = 512) => {
-    const byteCharacters = atob(b64Data);
-    const byteArrays = [];
-
-    for (let offset = 0; offset < byteCharacters.length; offset += sliceSize) {
-      const slice = byteCharacters.slice(offset, offset + sliceSize);
-
-      const byteNumbers = new Array(slice.length);
-      for (let i = 0; i < slice.length; i++) {
-        byteNumbers[i] = slice.charCodeAt(i);
-      }
-
-      const byteArray = new Uint8Array(byteNumbers);
-      byteArrays.push(byteArray);
-    }
-
-    return new Blob(byteArrays, { type: contentType });
+  const _enqueueTts = (audioBuffer) => {
+    ttsQueueRef.current.push(audioBuffer);
+    if (!isPlayingRef.current) _runTtsQueue();
   };
 
-  // Enqueue a binary audio buffer (TTS) for sequential playback
-  const enqueueTtsAudio = (audioBuffer, meta = {}) => {
-    if (!audioBuffer) return;
-    ttsQueueRef.current.push({ buffer: audioBuffer, meta });
-    // start runner if not running
-    if (!runnerRunningRef.current) {
-      runnerRunningRef.current = true;
-      runTtsQueueRunner();
-    }
-  };
-
-  // Play single audio element and wait until it ends or errors
-  const playAudioAndWait = (audioEl) => {
-    return new Promise((resolve) => {
-      const onEnded = () => {
-        try { audioEl.pause(); audioEl.src = ''; } catch (e) {}
-        audioEl.removeEventListener('ended', onEnded);
-        audioEl.removeEventListener('error', onError);
-        resolve();
-      };
-      const onError = (err) => {
-        console.warn('TTS playback error', err);
-        audioEl.removeEventListener('ended', onEnded);
-        audioEl.removeEventListener('error', onError);
-        try { audioEl.pause(); audioEl.src = ''; } catch (e) {}
-        resolve();
-      };
-      audioEl.addEventListener('ended', onEnded);
-      audioEl.addEventListener('error', onError);
-      audioEl.play().catch((err) => {
-        console.warn('TTS autoplay blocked or failed:', err);
-        onError(err);
-      });
-    });
-  };
-
-  // Runner loop that consumes the queue sequentially
-  const runTtsQueueRunner = async () => {
+  const _runTtsQueue = async () => {
     isPlayingRef.current = true;
     while (ttsQueueRef.current.length > 0) {
-      const next = ttsQueueRef.current.shift();
-      if (!next) break;
-      const { buffer, meta } = next;
-      // stop any existing audio
-      if (currentAudioElRef.current) {
-        try { currentAudioElRef.current.pause(); currentAudioElRef.current.src = ''; } catch (e) {}
-        currentAudioElRef.current = null;
-      }
+      const buffer = ttsQueueRef.current.shift();
       try {
         const blob = new Blob([buffer], { type: 'audio/mp3' });
-        const audioUrl = URL.createObjectURL(blob);
-        const audioEl = new Audio(audioUrl);
-        currentAudioElRef.current = audioEl;
-        await playAudioAndWait(audioEl);
+        const url = URL.createObjectURL(blob);
+        const audio = new Audio(url);
+        currentAudioElRef.current = audio;
+        await new Promise((resolve) => {
+          audio.onended = resolve;
+          audio.onerror = resolve;
+          audio.play().catch(resolve);
+        });
+        URL.revokeObjectURL(url);
         currentAudioElRef.current = null;
-      } catch (err) {
-        console.error('Error in TTS runner playback:', err);
-        currentAudioElRef.current = null;
+      } catch (e) {
+        console.warn('[useGroupCallAudioProcessing] TTS playback failed:', e);
       }
-      // small gap between audios
-      // eslint-disable-next-line no-await-in-loop
-      await new Promise((res) => setTimeout(res, 50));
+      await new Promise((r) => setTimeout(r, 50));
     }
     isPlayingRef.current = false;
-    runnerRunningRef.current = false;
   };
 
-  // Stop and clean up queue and any playing audio
-  const stopAndCleanupTts = () => {
+  const _stopTts = () => {
     ttsQueueRef.current = [];
-    const audioEl = currentAudioElRef.current;
-    if (audioEl) {
-      try { audioEl.pause(); audioEl.src = ''; } catch (e) {}
-      currentAudioElRef.current = null;
-    }
+    const el = currentAudioElRef.current;
+    if (el) { try { el.pause(); el.src = ''; } catch (e) {} }
+    currentAudioElRef.current = null;
     isPlayingRef.current = false;
-    runnerRunningRef.current = false;
   };
 
-  return {
-    transcripts
-  };
+  return { transcripts };
 };
 
 export default useGroupCallAudioProcessing;

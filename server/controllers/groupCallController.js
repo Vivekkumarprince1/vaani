@@ -2,6 +2,7 @@ const dbConnect = require('../lib/db');
 const GroupCall = require('../lib/models/GroupCall');
 const Room = require('../lib/models/Room');
 const { v4: uuidv4 } = require('uuid');
+const participantManager = require('../server/sfu/ParticipantManager');
 
 class GroupCallController {
   // In-memory timers for calls with single participant
@@ -22,14 +23,25 @@ class GroupCallController {
       await dbConnect();
 
       // Find all ringing calls where user is a participant
+      // Filter out calls older than 5 minutes
+      const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000);
+      
       const pendingCalls = await GroupCall.find({
         'participants.userId': userId,
         'participants.status': 'invited',
-        status: 'ringing'
+        status: 'ringing',
+        createdAt: { $gte: fiveMinutesAgo }
       })
         .populate('initiator', 'username email')
         .populate('roomId', 'name participants')
         .sort({ createdAt: -1 });
+
+      // Background task: Mark very old ringing calls as ended so they don't clog the DB
+      // We don't await this to keep the response fast
+      GroupCall.updateMany(
+        { status: 'ringing', createdAt: { $lt: fiveMinutesAgo } },
+        { status: 'ended', endedAt: new Date() }
+      ).catch(err => console.error('Error cleaning up stale group calls:', err));
 
       return res.status(200).json({
         calls: pendingCalls
@@ -82,6 +94,63 @@ class GroupCallController {
         status: { $in: ['ringing', 'active'] }
       });
 
+      // Helper to notify participants
+      const notifyParticipants = async (call, targetParticipants) => {
+        try {
+          const io = global.__io;
+          if (!io) {
+            console.warn('   ⚠️ [GroupCall] Socket.IO instance not available for notification');
+            return;
+          }
+
+          const payload = {
+            callId: String(call._id),
+            callRoomId: call.callRoomId,
+            roomId: String(call.roomId._id || call.roomId),
+            roomName: call.roomId.name || room.name,
+            callType: call.callType,
+            initiatorId: String(call.initiator._id || call.initiator),
+            initiator: {
+              _id: String(call.initiator._id || call.initiator),
+              username: call.initiator.username || 'System',
+              email: call.initiator.email || ''
+            },
+            participants: call.participants.map(p => ({
+              userId: String(p.userId._id || p.userId),
+              status: p.status,
+              username: p.userId.username || 'User'
+            }))
+          };
+
+          let sentCount = 0;
+          targetParticipants.forEach(pId => {
+            const pIdStr = String(pId);
+            const initiatorId = String(call.initiator._id || call.initiator);
+            
+            if (pIdStr === initiatorId) {
+              console.log(`      ⏭️ [Signaling] Skipping initiator: ${pIdStr}`);
+              return;
+            }
+
+            const targetRoom = `user_${pIdStr}`;
+            // Diagnostic: Check if anyone is in this room on this instance
+            const roomMembers = io.sockets.adapter.rooms.get(targetRoom);
+            const isOnlineLocally = roomMembers && roomMembers.size > 0;
+
+            console.log(`      🚀 [Signaling] Emitting to ${targetRoom} (Online locally: ${isOnlineLocally})`);
+            io.to(targetRoom).emit('group_incoming_call', payload);
+            io.to(targetRoom).emit('groupCallIncoming', payload);
+            sentCount++;
+          });
+
+          console.log(`   ✨ [Signaling] Notification broadcast complete. Sent to ${sentCount} target rooms.`);
+          return sentCount;
+        } catch (err) {
+          console.error('❌ [GroupCall] Critical error in notifyParticipants:', err);
+          return 0;
+        }
+      };
+
       if (existingCall) {
         // If the call has no active participants or is older than 5 minutes with status 'ringing',
         // it's likely abandoned - automatically end it and create a new one
@@ -91,20 +160,37 @@ class GroupCallController {
           (existingCall.status === 'ringing' && callAge > 5 * 60 * 1000); // 5 minutes
 
         if (isAbandoned) {
-          console.log(`🧹 Auto-ending abandoned call ${existingCall._id} for room ${roomId}`);
-          console.log(`   - Active participants: ${existingCall.activeParticipants.length}`);
-          console.log(`   - Status: ${existingCall.status}, Age: ${Math.floor(callAge / 1000)}s`);
+          console.log(`Sweep! Auto-ending abandoned call ${existingCall._id} for room ${roomId}`);
           existingCall.endCall();
           await existingCall.save();
-          // Clear the variable so we proceed to create a new call
           existingCall = null;
           console.log('✅ Abandoned call ended, proceeding to create new call');
         } else {
           // Return the existing active call with populated data
-          console.log(`⚠️ Found active call ${existingCall._id} with ${existingCall.activeParticipants.length} participants`);
+          console.log(`⚠️ Found active call ${existingCall._id} in DB (Status: ${existingCall.status})`);
           await existingCall.populate('initiator', 'username email');
           await existingCall.populate('participants.userId', 'username email');
           await existingCall.populate('roomId', 'name participants');
+
+          // Get truly active participants from the SFU room manager
+          const sfuParticipants = participantManager.getRoomParticipants(existingCall.callRoomId);
+          console.log(`   📡 SFU Room ${existingCall.callRoomId} has ${sfuParticipants.size} active connections:`, Array.from(sfuParticipants.keys()));
+
+          // Find anyone who is a participant but NOT in the SFU room
+          const inactiveIds = existingCall.participants
+            .map(p => String(p.userId._id || p.userId))
+            .filter(pId => {
+              if (pId === String(userId)) return false;
+              const isActive = sfuParticipants.has(pId);
+              if (isActive) console.log(`      ✅ Participant ${pId} is already active in SFU`);
+              return !isActive;
+            });
+          
+          if (inactiveIds.length > 0) {
+            console.log(`   🔄 Re-notifying ${inactiveIds.length} inactive participants:`, inactiveIds);
+            await notifyParticipants(existingCall, inactiveIds);
+          }
+
           return res.status(200).json({
             message: 'Active call already exists for this room',
             call: existingCall
@@ -137,76 +223,21 @@ class GroupCallController {
 
       await groupCall.save();
 
-      // Populate for response
+      // Populate for response and notification
       await groupCall.populate('initiator', 'username email');
       await groupCall.populate('participants.userId', 'username email');
       await groupCall.populate('roomId', 'name participants');
 
       // Emit socket event to notify all participants
-      console.log(`📞 Notifying ${room.participants.length} participants about group call in room: ${room.name}`);
+      console.log(`📞 [GroupCall] Notifying ${room.participants.length} participants about new group call: ${room.name}`);
+      const sentCount = await notifyParticipants(groupCall, room.participants);
       
-      try {
-        if (global.__io) {
-          const io = global.__io;
-          let notificationsSent = 0;
-          const notifiedParticipants = new Set();
-          
-          // Prepare payload matching frontend expectation
-          const payload = {
-            callId: groupCall._id,
-            callRoomId: groupCall.callRoomId,
-            roomId: groupCall.roomId._id,
-            roomName: groupCall.roomId.name,
-            callType: groupCall.callType,
-            initiatorId: groupCall.initiator._id, // Top-level ID for easier filtering
-            initiator: {
-              _id: groupCall.initiator._id,
-              username: groupCall.initiator.username,
-              email: groupCall.initiator.email
-            },
-            participants: groupCall.participants.map(p => ({
-              userId: p.userId._id,
-              status: p.status,
-              username: p.userId.username
-            }))
-          };
-          
-          // Notify each participant via their private user room
-          room.participants.forEach(participantId => {
-            const participantIdStr = participantId.toString();
-
-            // Skip initiator (they already know they started the call)
-            if (participantIdStr === groupCall.initiator._id.toString()) {
-              return;
-            }
-
-            // Emit to the user's private room (which handles multiple tabs/devices automatically)
-            io.to(`user_${participantIdStr}`).emit('group_incoming_call', payload);
-            console.log(`      ✅ Sent 'group_incoming_call' to user room: user_${participantIdStr}`);
-            
-            notificationsSent++;
-            notifiedParticipants.add(participantIdStr);
-          });
-          
-          console.log(`   📤 Dispatched notifications to ${notifiedParticipants.size} participants`);
-          
-          // Update notification flags for all notified participants
-          groupCall.participants.forEach(participant => {
-            const participantIdStr = participant.userId._id.toString();
-            if (notifiedParticipants.has(participantIdStr)) {
-              participant.notificationSent = true;
-            }
-          });
-          
-          // Save updated notification flags
-          if (notificationsSent > 0) {
-            await groupCall.save();
-          }
-        } else {
-          console.warn('   ⚠️ Socket.IO instance not available (global.__io is undefined)');
-        }
-      } catch (err) {
-        console.error('❌ Error emitting group call notification:', err);
+      // Update notification flags
+      if (sentCount > 0) {
+        groupCall.participants.forEach(p => {
+          if (p.status === 'invited') p.notificationSent = true;
+        });
+        await groupCall.save();
       }
 
       return res.status(201).json({

@@ -1,14 +1,24 @@
-
-import React, { useEffect, useRef, useState, useCallback } from 'react';
+import React, { useEffect, useCallback, useState } from 'react';
+import { Track } from 'livekit-client';
 import { useTranslation } from '../contexts/TranslationContext';
-import { getIceServers } from '../utils/webrtcConfig';
 import CallControls from './VideoCallComponents/CallControls';
+import ParticipantGrid from './ParticipantGrid';
+import GroupCaptionRenderer from '../subtitle/GroupCaptionRenderer';
+import useLiveKitRoom from '../hooks/useLiveKitRoom';
 import useGroupCallAudioProcessing from '../hooks/useGroupCallAudioProcessing';
-// Server-side TTS handled by socket event 'groupCallTranslatedSpeech'
+import { useTranslatedAudioTrack } from '../hooks/useTranslatedAudioTrack';
+import { filterHumanParticipants } from '../sfu/TrackSubscriptionManager';
+
+// True when the server is injecting TTS audio as LiveKit tracks.
+// Must match server USE_LIVEKIT_AUDIO_TRACKS env var.
+const USE_LIVEKIT_AUDIO_TRACKS = import.meta.env.VITE_USE_LIVEKIT_AUDIO_TRACKS === 'true';
 
 /**
- * GroupVideoCall component for multi-participant video calls with translation
- * Handles WebRTC mesh topology where each peer connects to all others
+ * GroupVideoCall (SFU-based)
+ *
+ * Orchestrator only — wires hooks together and renders layout.
+ * WebRTC mesh peer connections removed; LiveKit SFU handles all media routing.
+ * Translation pipeline (Socket.IO → Azure → TTS) is unchanged.
  */
 const GroupVideoCall = ({
   socket,
@@ -16,439 +26,207 @@ const GroupVideoCall = ({
   roomName,
   currentUserId,
   onEndCall,
-  callType = 'video'
+  callType = 'video',
 }) => {
   const { currentLanguage } = useTranslation();
-  
-  // State
-  const [participants, setParticipants] = useState(new Map());
+
+  // ── SFU connection ────────────────────────────────────────────────────────
+  const {
+    room,
+    connectionState,
+    remoteParticipants,
+    activeSpeakerId,
+    localParticipant,
+    error: livekitError,
+    isConnected,
+    toggleMicrophone,
+    toggleCamera: livekitToggleCamera,
+  } = useLiveKitRoom(callRoomId, {
+    enabled: Boolean(callRoomId),
+    publishAudio: true,
+    publishVideo: callType === 'video',
+  });
+
+  // ── Local UI state ────────────────────────────────────────────────────────
   const [isMuted, setIsMuted] = useState(false);
   const [isCameraOff, setIsCameraOff] = useState(callType === 'audio');
-  const [activeSpeaker, setActiveSpeaker] = useState(null);
-  
-  // Refs
-  const localStreamRef = useRef(null);
-  const localVideoRef = useRef(null);
-  const peerConnectionsRef = useRef(new Map()); // Map<socketId, RTCPeerConnection>
-  const audioContextRef = useRef(null);
-  
-  // Use audio processing hook for translation/transcription
+
+  // ── Translation + transcription pipeline ─────────────────────────────────
+  const localAudioStream = localParticipant
+    ? localParticipant.getTrackPublication?.(Track.Source.Microphone)?.track?.mediaStream
+    : null;
+
   const { transcripts } = useGroupCallAudioProcessing(
-    localStreamRef.current,
+    localAudioStream,
     socket,
     callRoomId,
     currentLanguage,
     currentUserId,
-    isMuted
+    isMuted,
+    USE_LIVEKIT_AUDIO_TRACKS
   );
-  
-  // Initialize local stream
-  useEffect(() => {
-    const initLocalStream = async () => {
-      try {
-        const constraints = {
-          audio: {
-            echoCancellation: true,
-            noiseSuppression: true,
-            autoGainControl: true
-          },
-          video: callType === 'video' ? {
-            width: { ideal: 1280 },
-            height: { ideal: 720 }
-          } : false
-        };
-        
-        const stream = await navigator.mediaDevices.getUserMedia(constraints);
-        localStreamRef.current = stream;
-        
-        if (localVideoRef.current) {
-          localVideoRef.current.srcObject = stream;
-        }
-        
-        // Join the group call room
-        socket.emit('joinGroupCall', {
-          callRoomId,
-          userId: currentUserId
-        });
-        
-      } catch (error) {
-        console.error('Error accessing media devices:', error);
-        alert('Failed to access camera/microphone. Please check permissions.');
-      }
-    };
-    
-    if (socket && callRoomId) {
-      initLocalStream();
-    }
-    
-    return () => {
-      // Cleanup on unmount
-      if (localStreamRef.current) {
-        localStreamRef.current.getTracks().forEach(track => track.stop());
-      }
-      
-      // Close all peer connections
-      peerConnectionsRef.current.forEach(pc => pc.close());
-      peerConnectionsRef.current.clear();
-      
-      if (audioContextRef.current) {
-        audioContextRef.current.close();
-      }
-    };
-  }, [socket, callRoomId, currentUserId, callType]);
-  
-  // Create peer connection
-  const createPeerConnection = useCallback((socketId, userId, username) => {
-    const existing = peerConnectionsRef.current.get(socketId);
-    if (existing) {
-      return existing;
-    }
 
-    try {
-      const pc = new RTCPeerConnection({
-        iceServers: getIceServers()
-      });
-      
-      // Add local stream tracks
-      if (localStreamRef.current) {
-        localStreamRef.current.getTracks().forEach(track => {
-          pc.addTrack(track, localStreamRef.current);
-        });
-      }
-      
-      // Handle remote stream
-      pc.ontrack = (event) => {
-        console.log(`📥 Received track from ${username} (${socketId})`);
-        const remoteStream = event.streams[0];
-        
-        // Ensure remote audio tracks are enabled for basic communication
-        remoteStream.getAudioTracks().forEach(track => {
-          track.enabled = true;
-          console.log(`[GroupVideoCall] Audio track enabled from ${username}`);
-        });
-        
-        setParticipants(prev => {
-          const updated = new Map(prev);
-          const participant = updated.get(socketId) || {};
-          updated.set(socketId, {
-            ...participant,
-            socketId,
-            userId,
-            username,
-            stream: remoteStream
-          });
-          return updated;
-        });
-      };
-      
-      // Handle ICE candidates
-      pc.onicecandidate = (event) => {
-        if (event.candidate) {
-          socket.emit('groupCallIceCandidate', {
-            callRoomId,
-            targetSocketId: socketId,
-            candidate: event.candidate
-          });
-        }
-      };
-      
-      // Connection state monitoring
-      pc.onconnectionstatechange = () => {
-        console.log(`Connection state with ${username}: ${pc.connectionState}`);
-        if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed') {
-          removeParticipant(socketId);
-        }
-      };
-      
-      peerConnectionsRef.current.set(socketId, pc);
-      return pc;
-      
-    } catch (error) {
-      console.error('Error creating peer connection:', error);
-      return null;
-    }
+  // ── Translated audio track (LiveKit path) ────────────────────────────────
+  const {
+    audioRef: translatedAudioRef,
+    isPlaying: isTranslatedAudioPlaying,
+    isEnabled: isTranslatedAudioEnabled,
+    toggleEnabled: toggleTranslatedAudio,
+  } = useTranslatedAudioTrack(room, currentLanguage, USE_LIVEKIT_AUDIO_TRACKS);
+
+  // Filter out vaani-translator-* virtual participants from the UI grid.
+  // room.remoteParticipants is a Map; remoteParticipants is already an Array.
+  const humanRemoteParticipants = USE_LIVEKIT_AUDIO_TRACKS
+    ? filterHumanParticipants(room?.remoteParticipants ?? new Map())
+    : (remoteParticipants ?? []);
+
+  // ── Notify server that we joined (for translation routing) ────────────────
+  useEffect(() => {
+    if (!socket || !callRoomId) return;
+    socket.emit('joinGroupCall', { callRoomId });
+
+    return () => {
+      socket.emit('leaveGroupCall', { callRoomId });
+    };
   }, [socket, callRoomId]);
-  
-  // Remove participant
-  const removeParticipant = useCallback((socketId) => {
-    const pc = peerConnectionsRef.current.get(socketId);
-    if (pc) {
-      pc.close();
-      peerConnectionsRef.current.delete(socketId);
-    }
-    
-    setParticipants(prev => {
-      const updated = new Map(prev);
-      updated.delete(socketId);
-      return updated;
-    });
-  }, []);
-  
-  // Socket event handlers
+
+  // ── Handle participant_joined / participant_disconnected for UI badge data ─
+  // LiveKit handles media; these Socket.IO events carry username/language metadata.
+  const [participantLanguages, setParticipantLanguages] = useState({});
+
   useEffect(() => {
     if (!socket) return;
-    
-    // Handle existing participants when joining
-    const handleExistingParticipants = async ({ participants: existingParticipants }) => {
-      console.log(`👥 Existing participants:`, existingParticipants);
-      
-      // Create offer for each existing participant
-      for (const participant of existingParticipants) {
-        const { socketId, userId, username } = participant;
-        
-        const pc = createPeerConnection(socketId, userId, username);
-        if (!pc) continue;
-        
-        try {
-          const offer = await pc.createOffer();
-          await pc.setLocalDescription(offer);
-          
-          socket.emit('groupCallOffer', {
-            callRoomId,
-            targetSocketId: socketId,
-            offer
-          });
-          
-          console.log(`📤 Sent offer to ${username} (${socketId})`);
-        } catch (error) {
-          console.error(`Error creating offer for ${username}:`, error);
-        }
-      }
-    };
-    
-    // Handle new participant joining
-    const handleUserJoined = async ({ userId, username, socketId }) => {
-      console.log(`👤 User joined: ${username} (${socketId})`);
-      
-      setParticipants(prev => {
-        const updated = new Map(prev);
-        updated.set(socketId, {
-          socketId,
-          userId,
-          username,
-          stream: null
-        });
-        return updated;
-      });
-    };
-    
-    // Handle incoming offer from another participant
-    const handleGroupCallOffer = async ({ fromSocketId, fromUserId, fromUsername, offer }) => {
-      console.log(`📥 Received offer from ${fromUsername} (${fromSocketId})`);
-      
-      const pc = createPeerConnection(fromSocketId, fromUserId, fromUsername);
-      if (!pc) return;
-      
-      try {
-        await pc.setRemoteDescription(new RTCSessionDescription(offer));
-        const answer = await pc.createAnswer();
-        await pc.setLocalDescription(answer);
-        
-        socket.emit('groupCallAnswer', {
-          callRoomId,
-          targetSocketId: fromSocketId,
-          answer
-        });
-        
-        console.log(`📤 Sent answer to ${fromUsername} (${fromSocketId})`);
-      } catch (error) {
-        console.error(`Error handling offer from ${fromUsername}:`, error);
-      }
-    };
-    
-    // Handle answer from another participant
-    const handleGroupCallAnswer = async ({ fromSocketId, fromUserId, fromUsername, answer }) => {
-      console.log(`📥 Received answer from ${fromUsername} (${fromSocketId})`);
-      
-      const pc = peerConnectionsRef.current.get(fromSocketId);
-      if (!pc) {
-        console.error(`No peer connection found for ${fromSocketId}`);
-        return;
-      }
-      
-      try {
-        if (pc.signalingState === 'stable' && pc.currentRemoteDescription) {
-          console.log(`⚠️ Skipping duplicate remote description from ${fromUsername}`);
-          return;
-        }
-        await pc.setRemoteDescription(new RTCSessionDescription(answer));
-      } catch (error) {
-        console.error(`Error setting remote description from ${fromUsername}:`, error);
-      }
-    };
-    
-    // Handle ICE candidate
-    const handleGroupCallIceCandidate = async ({ fromSocketId, candidate }) => {
-      const pc = peerConnectionsRef.current.get(fromSocketId);
-      if (!pc) return;
-      
-      try {
-        await pc.addIceCandidate(new RTCIceCandidate(candidate));
-      } catch (error) {
-        console.error('Error adding ICE candidate:', error);
-      }
-    };
-    
-    // Handle participant leaving
-    const handleUserLeft = ({ socketId }) => {
-      console.log(`👋 User left: ${socketId}`);
-      removeParticipant(socketId);
-    };
-    
-    // Register event listeners
-    socket.on('existingParticipants', handleExistingParticipants);
-    socket.on('userJoinedGroupCall', handleUserJoined);
-    socket.on('groupCallOffer', handleGroupCallOffer);
-    socket.on('groupCallAnswer', handleGroupCallAnswer);
-    socket.on('groupCallIceCandidate', handleGroupCallIceCandidate);
-    socket.on('userLeftGroupCall', handleUserLeft);
-    
-    return () => {
-      socket.off('existingParticipants', handleExistingParticipants);
-      socket.off('userJoinedGroupCall', handleUserJoined);
-      socket.off('groupCallOffer', handleGroupCallOffer);
-      socket.off('groupCallAnswer', handleGroupCallAnswer);
-      socket.off('groupCallIceCandidate', handleGroupCallIceCandidate);
-      socket.off('userLeftGroupCall', handleUserLeft);
-    };
-  }, [socket, callRoomId, createPeerConnection, removeParticipant]);
-  
-  // Toggle mute - IMPORTANT: We keep the local track enabled for voice recognition
-  // But stop sending audio through peer connections when muted
-  const toggleMute = useCallback(() => {
-    const newMutedState = !isMuted;
-    setIsMuted(newMutedState);
-    
-    // Mute/unmute audio in all peer connections
-    peerConnectionsRef.current.forEach((pc, socketId) => {
-      const senders = pc.getSenders();
-      senders.forEach(sender => {
-        if (sender.track && sender.track.kind === 'audio') {
-          sender.track.enabled = !newMutedState;
-          console.log(`${newMutedState ? '🔇' : '🔊'} ${newMutedState ? 'Muted' : 'Unmuted'} audio to peer ${socketId}`);
-        }
-      });
-    });
-    
-    // Note: We keep localStreamRef.current audio track enabled for voice recognition
-    // Only the peer connection tracks are muted
-  }, [isMuted]);
-  
-  // Toggle camera
-  const toggleCamera = useCallback(() => {
-    if (localStreamRef.current) {
-      const videoTrack = localStreamRef.current.getVideoTracks()[0];
-      if (videoTrack) {
-        videoTrack.enabled = !videoTrack.enabled;
-        setIsCameraOff(!videoTrack.enabled);
-      }
-    }
-  }, []);
-  
-  // End call
-  const handleEndCall = useCallback(() => {
-    // Leave the group call room
-    socket.emit('leaveGroupCall', { callRoomId });
-    
-    // Stop local stream
-    if (localStreamRef.current) {
-      localStreamRef.current.getTracks().forEach(track => track.stop());
-    }
-    
-    // Close all peer connections
-    peerConnectionsRef.current.forEach(pc => pc.close());
-    peerConnectionsRef.current.clear();
-    
-    // Call parent callback
-    if (onEndCall) {
-      onEndCall();
-    }
-  }, [socket, callRoomId, onEndCall]);
-  
-  return (
-    <div className="fixed inset-0 z-50 bg-gray-900">
-      {/* Header */}
-      <div className="absolute top-0 left-0 right-0 bg-gradient-to-b from-black/50 to-transparent p-4 z-10">
-        <div className="flex items-center justify-between">
-          <div>
-            <h2 className="text-white text-xl font-semibold">{roomName}</h2>
-            <p className="text-gray-300 text-sm">{participants.size + 1} participants</p>
-          </div>
-        </div>
-      </div>
-      
-      {/* Video Grid */}
-      <div className="h-full w-full p-4 pt-20 pb-32">
-        <div className={`grid gap-4 h-full ${
-          participants.size === 0 ? 'grid-cols-1' :
-          participants.size === 1 ? 'grid-cols-2' :
-          participants.size <= 3 ? 'grid-cols-2 grid-rows-2' :
-          participants.size <= 8 ? 'grid-cols-3 grid-rows-3' :
-          'grid-cols-4 grid-rows-3'
-        }`}>
-          {/* Local video */}
-          <div className="relative bg-gray-800 rounded-lg overflow-hidden">
-            <video
-              ref={localVideoRef}
-              autoPlay
-              muted
-              playsInline
-              className={`w-full h-full object-cover ${isCameraOff ? 'hidden' : ''}`}
-            />
-            {isCameraOff && (
-              <div className="absolute inset-0 flex items-center justify-center bg-gray-800">
-                <div className="w-24 h-24 rounded-full bg-blue-500 flex items-center justify-center text-white text-4xl font-bold">
-                  {socket?.user?.username?.[0]?.toUpperCase() || 'Y'}
-                </div>
-              </div>
-            )}
-            <div className="absolute bottom-2 left-2 bg-black/70 px-2 py-1 rounded text-white text-sm">
-              You {isMuted && '🔇'}
-            </div>
-          </div>
-          
-          {/* Remote videos */}
-          {Array.from(participants.values()).map((participant) => (
-            <ParticipantVideo
-              key={participant.socketId}
-              participant={participant}
-              activeSpeaker={activeSpeaker}
-            />
-          ))}
-        </div>
-      </div>
-      
-      {/* Transcription Display (simple cards) */}
-      <div className="absolute bottom-32 left-4 right-4 space-y-3 max-h-80 overflow-y-auto">
-        {transcripts.length > 0 && (
-          <div className="space-y-2">
-            {transcripts.slice(-3).map((transcript, idx) => {
-              const isMe = transcript.userId === currentUserId;
-              const isTranslated = transcript.isTranslated;
 
-              return (
-                <div key={`${transcript.userId}-${idx}-${transcript.timestamp}`} className={`animate-fade-in p-2 rounded-md ${isTranslated ? 'bg-green-900/60' : 'bg-gray-900/60'}`}>
-                  <div className="flex items-start justify-between">
-                    <div className="text-xs text-emerald-300 font-medium">
-                      {isTranslated ? `🌐 ${transcript.username} (translated to ${currentLanguage})` : `${isMe ? '🎤' : '👤'} ${transcript.username} (${transcript.language})`}
-                    </div>
-                    <div className="text-[10px] text-gray-400 ml-2">{new Date(transcript.timestamp).toLocaleTimeString()}</div>
-                  </div>
-                  <div className="text-white mt-1 leading-snug line-clamp-3">
-                    {transcript.text}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        )}
+    const onJoined = ({ userId, username }) => {
+      setParticipantLanguages((prev) => ({ ...prev, [userId]: currentLanguage }));
+    };
+    const onLanguageChanged = ({ userId, preferredLanguage }) => {
+      setParticipantLanguages((prev) => ({ ...prev, [userId]: preferredLanguage }));
+    };
+    const onExistingParticipants = ({ participants }) => {
+      console.log('👥 Received existing participants:', participants);
+      const languages = {};
+      participants.forEach(p => {
+        // We don't have language here, but we can assume default or wait for sync
+        languages[p.userId] = 'en'; 
+      });
+      setParticipantLanguages((prev) => ({ ...prev, ...languages }));
+    };
+
+    socket.on('participant_joined', onJoined);
+    socket.on('userLanguageChanged', onLanguageChanged);
+    socket.on('existingParticipants', onExistingParticipants);
+
+    return () => {
+      socket.off('participant_joined', onJoined);
+      socket.off('userLanguageChanged', onLanguageChanged);
+      socket.off('existingParticipants', onExistingParticipants);
+    };
+  }, [socket, currentLanguage]);
+
+  // ── Controls ──────────────────────────────────────────────────────────────
+  const handleToggleMute = useCallback(async () => {
+    const next = !isMuted;
+    setIsMuted(next);
+    await toggleMicrophone(!next);
+  }, [isMuted, toggleMicrophone]);
+
+  const handleToggleCamera = useCallback(async () => {
+    const next = !isCameraOff;
+    setIsCameraOff(next);
+    await livekitToggleCamera(!next);
+  }, [isCameraOff, livekitToggleCamera]);
+
+  const handleEndCall = useCallback(() => {
+    socket?.emit('leaveGroupCall', { callRoomId });
+    onEndCall?.();
+  }, [socket, callRoomId, onEndCall]);
+
+  const participantCount = 1 + humanRemoteParticipants.length;
+
+  return (
+    <div className="fixed inset-0 z-50 bg-gray-900 flex flex-col">
+      {/* Hidden audio element that plays the translated LiveKit track */}
+      {USE_LIVEKIT_AUDIO_TRACKS && (
+        <audio ref={translatedAudioRef} autoPlay playsInline style={{ display: 'none' }} />
+      )}
+
+      {/* Header */}
+      <div className="flex-shrink-0 bg-gradient-to-b from-black/60 to-transparent px-4 py-3 flex items-center justify-between">
+        <div>
+          <h2 className="text-white text-lg font-semibold">{roomName}</h2>
+          {livekitError ? (
+            <p className="text-red-400 text-xs font-medium animate-pulse">
+              ⚠️ Connection Error: {livekitError}
+            </p>
+          ) : (
+            <p className="text-gray-300 text-xs">
+              {participantCount} participant{participantCount !== 1 ? 's' : ''} · {connectionState}
+            </p>
+          )}
+        </div>
+        <div className="flex items-center gap-2">
+          {USE_LIVEKIT_AUDIO_TRACKS && (
+            <button
+              onClick={toggleTranslatedAudio}
+              title={isTranslatedAudioEnabled ? 'Mute translation' : 'Unmute translation'}
+              className={`text-xs px-2 py-0.5 rounded border transition-colors ${
+                isTranslatedAudioEnabled
+                  ? 'border-green-500 text-green-400 bg-green-900/30'
+                  : 'border-gray-600 text-gray-400 bg-gray-800/50'
+              }`}
+            >
+              {isTranslatedAudioEnabled ? '🔊' : '🔇'} TL
+            </button>
+          )}
+          <span className="text-xs text-indigo-300 bg-indigo-900/50 px-2 py-0.5 rounded">
+            {currentLanguage?.toUpperCase()}
+          </span>
+        </div>
       </div>
-      
-      {/* Call Controls */}
-      <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/50 to-transparent p-6 z-10">
+
+      {/* Participant grid — fills available space */}
+      <div className="flex-1 min-h-0">
+        <ParticipantGrid
+          localParticipant={localParticipant}
+          remoteParticipants={humanRemoteParticipants}
+          activeSpeakerId={activeSpeakerId}
+          participantLanguages={participantLanguages}
+        />
+      </div>
+
+      {/* Subtitle overlay (synced to TTS playback) */}
+      <GroupCaptionRenderer socket={socket} currentUserId={currentUserId} />
+
+      {/* Transcript overlay */}
+      {transcripts.length > 0 && (
+        <div className="flex-shrink-0 px-4 py-2 space-y-1 max-h-44 overflow-y-auto">
+          {transcripts.slice(-3).map((transcript, idx) => {
+            const isTranslated = transcript.isTranslated;
+            return (
+              <div
+                key={`${transcript.userId}-${idx}-${transcript.timestamp}`}
+                className={`animate-fade-in px-3 py-1.5 rounded-md text-sm ${
+                  isTranslated ? 'bg-green-900/60' : 'bg-gray-800/70'
+                }`}
+              >
+                <span className="text-xs text-emerald-300 font-medium mr-1">
+                  {isTranslated
+                    ? `🌐 ${transcript.username}`
+                    : `${transcript.userId === currentUserId ? '🎤' : '👤'} ${transcript.username}`}
+                </span>
+                <span className="text-white">{transcript.text}</span>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Call controls */}
+      <div className="flex-shrink-0 bg-gradient-to-t from-black/60 to-transparent px-6 pb-6 pt-2">
         <CallControls
-          toggleMute={toggleMute}
-          toggleCamera={toggleCamera}
+          toggleMute={handleToggleMute}
+          toggleCamera={handleToggleCamera}
           endCall={handleEndCall}
           isMuted={isMuted}
           isCameraOff={isCameraOff}
@@ -458,84 +236,15 @@ const GroupVideoCall = ({
   );
 };
 
-// Participant video component
-const ParticipantVideo = ({ participant, activeSpeaker }) => {
-  const videoRef = useRef(null);
-  const [hasVideo, setHasVideo] = useState(false);
-  
-  useEffect(() => {
-    if (videoRef.current && participant.stream) {
-      videoRef.current.srcObject = participant.stream;
-      videoRef.current.muted = true;
-      videoRef.current.volume = 0;
-      videoRef.current.setAttribute('muted', 'true');
-      
-      // Check if stream has video track
-      const videoTrack = participant.stream.getVideoTracks()[0];
-      setHasVideo(videoTrack && videoTrack.enabled);
-      
-      // Listen for track changes
-      participant.stream.addEventListener('addtrack', () => {
-        const vt = participant.stream.getVideoTracks()[0];
-        setHasVideo(vt && vt.enabled);
-      });
-      
-      participant.stream.addEventListener('removetrack', () => {
-        const vt = participant.stream.getVideoTracks()[0];
-        setHasVideo(vt && vt.enabled);
-      });
-    }
-  }, [participant.stream]);
-  
-  const isActive = activeSpeaker === participant.userId;
-  
-  return (
-    <div className={`relative bg-gray-800 rounded-lg overflow-hidden ${
-      isActive ? 'ring-4 ring-green-500' : ''
-    }`}>
-      <video
-        ref={videoRef}
-        autoPlay
-        playsInline
-        className={`w-full h-full object-cover ${!hasVideo ? 'hidden' : ''}`}
-      />
-      {!hasVideo && (
-        <div className="absolute inset-0 flex items-center justify-center bg-gray-800">
-          <div className="w-24 h-24 rounded-full bg-purple-500 flex items-center justify-center text-white text-4xl font-bold">
-            {participant.username?.[0]?.toUpperCase() || '?'}
-          </div>
-        </div>
-      )}
-      <div className="absolute bottom-2 left-2 bg-black/70 px-2 py-1 rounded text-white text-sm">
-        {participant.username}
-      </div>
-    </div>
-  );
-};
-
 export default GroupVideoCall;
 
-// Add global styles for animations
-if (typeof document !== 'undefined') {
+// Inject keyframe for transcript fade-in (once per page load)
+if (typeof document !== 'undefined' && !document.head.querySelector('[data-group-call-styles]')) {
   const style = document.createElement('style');
+  style.setAttribute('data-group-call-styles', 'true');
   style.textContent = `
-    @keyframes fadeIn {
-      from {
-        opacity: 0;
-        transform: translateY(10px);
-      }
-      to {
-        opacity: 1;
-        transform: translateY(0);
-      }
-    }
-    
-    .animate-fade-in {
-      animation: fadeIn 0.3s ease-in;
-    }
+    @keyframes fadeIn { from { opacity:0; transform:translateY(6px); } to { opacity:1; transform:translateY(0); } }
+    .animate-fade-in { animation: fadeIn 0.25s ease-out; }
   `;
-  if (!document.head.querySelector('style[data-group-call-styles]')) {
-    style.setAttribute('data-group-call-styles', 'true');
-    document.head.appendChild(style);
-  }
+  document.head.appendChild(style);
 }

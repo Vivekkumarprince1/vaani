@@ -2,6 +2,8 @@ const handleAudioTranslation = require('./audioHandler');
 const handleGroupCallAudioTranslation = require('./groupCallAudioHandler');
 const User = require('../../lib/models/User');
 const Chat = require('../../lib/models/Chat');
+const participantManager = require('../sfu/ParticipantManager');
+const workerManager = require('../sfu/TranslationWorkerManager');
 
 const pendingCalls = new Map(); // Store pending private calls for reconnection
 
@@ -42,18 +44,19 @@ module.exports = (io, users, rooms, findUserByUserId) => {
       preferredLanguage: preferredLanguage
     };
 
+    // Join a private room for this user to receive direct notifications regardless of active chat room
+    socket.join(`user_${userId}`);
+    console.log(`   🏠 Socket ${socket.id} joined private room: user_${userId}`);
+
     // Update user status in database
     try {
+      const userIdStr = String(userId);
       await User.findByIdAndUpdate(userId, {
         status: 'online',
         lastActive: new Date(),
         socketId: socket.id
       });
-      console.log(`✅ User registered: socketId=${socket.id}, userId=${userId}, username=${finalUsername}, lang=${preferredLanguage} - DB updated`);
-      
-      // Join a private room for this user to receive direct notifications regardless of active chat room
-      socket.join(`user_${userId}`);
-      console.log(`   🏠 Socket ${socket.id} joined private room: user_${userId}`);
+      console.log(`✅ User registered: socketId=${socket.id}, userId=${userIdStr}, username=${finalUsername}, lang=${preferredLanguage} - DB updated`);
     } catch (error) {
       console.error(`❌ Failed to update user status in DB for userId=${userId}:`, error);
     }
@@ -86,8 +89,13 @@ module.exports = (io, users, rooms, findUserByUserId) => {
       const { language } = data;
       if (language && users[socket.id]) {
         users[socket.id].preferredLanguage = language;
-        
-        // Broadcast change so anyone in a call with this user can update their UI/translation target
+
+        // Keep ParticipantManager in sync for any active group call
+        const callRoomId = participantManager.findRoomForUser(String(userId));
+        if (callRoomId) {
+          participantManager.updateLanguage(callRoomId, userId, language);
+        }
+
         socket.broadcast.emit('userLanguageChanged', {
           userId: userId,
           preferredLanguage: language
@@ -267,23 +275,39 @@ module.exports = (io, users, rooms, findUserByUserId) => {
       console.log(`📞 Call initiated: from=${userId} to=${to}, callType=${callType}, roomId=${roomId}`);
 
       if (roomId) {
-        // Group call - notify all room members except sender
+        // Group call — notify via user private rooms so offline-from-chat members also receive it.
+        // The REST /group-call/initiate is the preferred path; this covers direct socket initiations.
         (async () => {
           try {
-            const socketsInRoom = await io.in(roomId).fetchSockets();
-            console.log(`📤 Emitting incomingCall to ${socketsInRoom.length - 1} peers in room ${roomId}`);
-            for (const s of socketsInRoom) {
-              if (s.id === socket.id) continue;
-              io.to(s.id).emit('incomingCall', {
-                from: userId,
-                fromName: socket.user.username,
-                offer,
-                callType,
-                roomId
-              });
+            const Chat = require('../../lib/models/Chat');
+            const Room = require('../../lib/models/Room');
+            const room = await Room.findById(roomId).select('participants name').lean();
+            if (!room) {
+              console.warn(`[callUser] Room ${roomId} not found`);
+              return;
             }
+            const payload = {
+              from: userId,
+              fromName: users[socket.id]?.username || socket.user.username,
+              callType,
+              roomId,
+              roomName: room.name,
+              callRoomId: data.callRoomId || roomId,
+              callId: data.callId || null,
+              initiatorId: String(userId),
+              initiator: { username: users[socket.id]?.username || socket.user.username }
+            };
+            let sentCount = 0;
+            for (const participantId of room.participants) {
+              const pIdStr = String(participantId);
+              if (pIdStr === String(userId)) continue; // skip self
+              io.to(`user_${pIdStr}`).emit('group_incoming_call', payload);
+              io.to(`user_${pIdStr}`).emit('groupCallIncoming', payload);
+              sentCount++;
+            }
+            console.log(`📤 [callUser] Notified ${sentCount} group members via user_ rooms for room ${roomId}`);
           } catch (err) {
-            console.error('Error emitting incomingCall to room:', err);
+            console.error('Error emitting group incomingCall:', err);
           }
         })();
       } else {
@@ -412,35 +436,37 @@ module.exports = (io, users, rooms, findUserByUserId) => {
       }
     });
 
-    // Group call events
+    // Group call events (SFU-based — WebRTC mesh signaling removed)
     socket.on('joinGroupCall', (data) => {
-      const { callRoomId, userId: joinUserId } = data;
-      console.log(`👥 User ${joinUserId || userId} joining group call room: ${callRoomId}`);
+      const { callRoomId } = data;
+      console.log(`👥 User ${userId} joining group call room: ${callRoomId}`);
 
+      // Join Socket.IO room for translation events (NOT for WebRTC signaling)
       socket.join(callRoomId);
 
-      // Notify other participants in the call room that someone joined
+      // Register in ParticipantManager for language routing
+      participantManager.handleJoin(callRoomId, userId, {
+        socketId: socket.id,
+        username: users[socket.id]?.username || socket.user.username || 'Unknown',
+        preferredLanguage: users[socket.id]?.preferredLanguage || 'en',
+      });
+
+      // Notify others that someone joined
       socket.to(callRoomId).emit('participant_joined', {
-        userId: joinUserId || userId,
+        userId,
         username: socket.user.username,
-        socketId: socket.id
+        socketId: socket.id,
       });
 
-      io.in(callRoomId).allSockets().then(sockets => {
-        const participants = Array.from(sockets)
-          .filter(sid => sid !== socket.id)
-          .map(sid => ({
-            socketId: sid,
-            userId: users[sid]?.userId,
-            username: users[sid]?.username
-          }))
-          .filter(p => p.userId);
-
-        socket.emit('existingParticipants', {
-          callRoomId,
-          participants
-        });
-      });
+      // Send current participant list to the joiner (for UI display — LiveKit handles media)
+      const roomParticipants = participantManager.getRoomParticipants(callRoomId);
+      const participantList = [];
+      for (const [uid, meta] of roomParticipants) {
+        if (uid !== String(userId)) {
+          participantList.push({ userId: uid, username: meta.username, socketId: meta.socketId });
+        }
+      }
+      socket.emit('existingParticipants', { callRoomId, participants: participantList });
     });
 
     socket.on('leaveGroupCall', (data) => {
@@ -448,53 +474,30 @@ module.exports = (io, users, rooms, findUserByUserId) => {
       console.log(`👥 User ${userId} leaving group call room: ${callRoomId}`);
 
       socket.leave(callRoomId);
+      const { remainingCount } = participantManager.handleLeave(callRoomId, userId);
 
       socket.to(callRoomId).emit('participant_disconnected', {
         userId,
         username: socket.user.username,
         socketId: socket.id,
-        reason: 'left'
+        reason: 'left',
       });
+
+      // Destroy LiveKit translation tracks when the room is empty
+      if (remainingCount === 0) {
+        workerManager.destroyWorker(callRoomId).catch(() => {});
+      }
     });
 
-    socket.on('groupCallOffer', (data) => {
-      const { callRoomId, targetSocketId, offer } = data;
-      io.to(targetSocketId).emit('groupCallOffer', {
-        fromSocketId: socket.id,
-        fromUserId: userId,
-        fromUsername: socket.user.username,
-        offer,
-        callRoomId
-      });
-    });
-
-    socket.on('groupCallAnswer', (data) => {
-      const { callRoomId, targetSocketId, answer } = data;
-      io.to(targetSocketId).emit('groupCallAnswer', {
-        fromSocketId: socket.id,
-        fromUserId: userId,
-        fromUsername: socket.user.username,
-        answer,
-        callRoomId
-      });
-    });
-
-    socket.on('groupCallIceCandidate', (data) => {
-      const { callRoomId, targetSocketId, candidate } = data;
-      io.to(targetSocketId).emit('groupCallIceCandidate', {
-        fromSocketId: socket.id,
-        fromUserId: userId,
-        candidate,
-        callRoomId
-      });
-    });
+    // groupCallOffer / groupCallAnswer / groupCallIceCandidate removed:
+    // LiveKit SFU now handles all WebRTC media negotiation internally.
 
     socket.on('groupCallSpeaking', (data) => {
       const { callRoomId, isSpeaking } = data;
       socket.to(callRoomId).emit('participantSpeaking', {
         userId,
         username: socket.user.username,
-        isSpeaking
+        isSpeaking,
       });
     });
 
@@ -557,15 +560,32 @@ module.exports = (io, users, rooms, findUserByUserId) => {
           status: 'offline'
         });
 
-        // Emit participant_disconnected to any call rooms the socket was part of
+        // Clean up from SFU ParticipantManager if user was in a group call
+        const callRoomId = participantManager.findRoomForUser(String(userId));
+        if (callRoomId) {
+          const { remainingCount } = participantManager.handleLeave(callRoomId, userId);
+          try {
+            socket.to(callRoomId).emit('participant_disconnected', {
+              userId,
+              username: socket.user?.username || 'Unknown',
+              reason: 'disconnect',
+            });
+          } catch (e) {
+            console.warn('[socketHandlers] Failed to emit participant_disconnected', e);
+          }
+          if (remainingCount === 0) {
+            workerManager.destroyWorker(callRoomId).catch(() => {});
+          }
+        }
+
+        // Emit participant_disconnected to any chat/messaging rooms the socket was part of
         Object.keys(rooms).forEach(roomId => {
           if (rooms[roomId]?.has(userId)) {
             rooms[roomId].delete(userId);
-            // Notify remaining sockets in that room
             try {
               socket.to(roomId).emit('participant_disconnected', {
                 userId,
-                username: socket.user.username,
+                username: socket.user?.username || 'Unknown',
                 reason: 'disconnect'
               });
             } catch (e) {

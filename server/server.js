@@ -7,6 +7,7 @@ const jwt = require('jsonwebtoken');
 const handleAudioTranslation = require('./server/socket/audioHandler');
 const handleGroupCallAudioTranslation = require('./server/socket/groupCallAudioHandler');
 const socketHandlers = require('./server/socket/socketHandlers');
+const redisManager = require('./server/redis/RedisManager');
 
 // Validate Azure env and expose TTS availability
 const { config: envConfig } = require('./server/utils/env');
@@ -22,6 +23,8 @@ console.log('  JWT_SECRET:', envConfig.JWT_SECRET ? '✅ Loaded' : '❌ Missing'
 console.log('  NODE_ENV:', envConfig.NODE_ENV || 'development');
 console.log('  PORT:', envConfig.PORT || '3001');
 console.log('  ALLOWED_ORIGINS:', envConfig.ALLOWED_ORIGINS || '❌ Missing');
+console.log('  LIVEKIT_URL:', envConfig.LIVEKIT_URL || '❌ Missing');
+console.log('  LIVEKIT_API_KEY:', envConfig.LIVEKIT_API_KEY ? '✅ Loaded' : '❌ Missing (SFU disabled)');
 
 
 if (!ttsAvailable) {
@@ -53,6 +56,9 @@ app.use('/api/translator', translatorRoutes);
 
 const chatRoutes = require('./routes/chat');
 app.use('/api/chat', chatRoutes);
+
+const livekitRoutes = require('./routes/livekit');
+app.use('/api/livekit', livekitRoutes);
 
 const server = createServer(app);
 
@@ -98,6 +104,21 @@ const io = new Server(server, {
 // Expose io globally so routes can emit events
 global.__io = io;
 console.log('Global Socket.IO instance set: global.__io');
+
+// Wire Socket.IO Redis adapter for horizontal scaling (when Redis is available)
+if (redisManager.isReady && redisManager.client) {
+  try {
+    const { createAdapter } = require('@socket.io/redis-adapter');
+    const pubClient = redisManager.client.duplicate();
+    const subClient = redisManager.client.duplicate();
+    io.adapter(createAdapter(pubClient, subClient));
+    console.log('✅ Socket.IO Redis adapter enabled — horizontal scaling active');
+  } catch (err) {
+    console.warn('⚠️ Socket.IO Redis adapter unavailable (install @socket.io/redis-adapter for multi-instance scaling):', err.message);
+  }
+} else {
+  console.log('ℹ️ Socket.IO using default in-memory adapter (single-instance mode)');
+}
 
 // Socket.IO authentication middleware
 io.use((socket, next) => {

@@ -61,8 +61,19 @@ const config = {
   SOCKET_MAX_HTTP_BUFFER_SIZE: parseInt(process.env.SOCKET_MAX_HTTP_BUFFER_SIZE || '10000000', 10), // 10MB
 
 
+  // LiveKit SFU
+  LIVEKIT_URL: process.env.LIVEKIT_URL || 'ws://localhost:7880',
+  LIVEKIT_API_KEY: process.env.LIVEKIT_API_KEY || '',
+  LIVEKIT_API_SECRET: process.env.LIVEKIT_API_SECRET || '',
+
+  // Redis
+  REDIS_URL: process.env.REDIS_URL || 'redis://localhost:6379',
+
   // Optional flags
   CLIENT_TTS: (process.env.CLIENT_TTS || 'false').toLowerCase() === 'true',
+  // When true: TTS audio injected into LiveKit tracks (production-grade).
+  // When false (default): TTS audio buffer sent via Socket.IO (fallback/dev mode).
+  USE_LIVEKIT_AUDIO_TRACKS: (process.env.USE_LIVEKIT_AUDIO_TRACKS || 'false').toLowerCase() === 'true',
   TTS_CONCURRENCY: parseInt(process.env.TTS_CONCURRENCY || '4', 10),
   TRANSLATION_CACHE_TTL_MS: parseInt(process.env.TRANSLATION_CACHE_TTL_MS || String(5 * 60 * 1000), 10),
   TRANSLATION_CACHE_MAX_ITEMS: parseInt(process.env.TRANSLATION_CACHE_MAX_ITEMS || '500', 10),

@@ -11,11 +11,13 @@
   },
   "dependencies": {
     "@heroicons/react": "^2.2.0",
+    "@livekit/components-react": "^2.9.21",
     "@tailwindcss/vite": "^4.2.4",
     "autoprefixer": "^10.5.0",
     "axios": "^1.12.2",
     "idb": "^8.0.3",
     "install": "^0.13.0",
+    "livekit-client": "^2.18.9",
     "npm": "^11.13.0",
     "p-limit": "^7.1.1",
     "postcss": "^8.5.13",

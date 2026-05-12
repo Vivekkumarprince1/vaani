@@ -59,20 +59,10 @@ async function seed() {
       { sender: users[2]._id, room: String(room1._id), isGroupMessage: true, originalContent: 'Hello everyone', content: 'Hello everyone', originalLanguage: 'hi', timestamp: new Date() }
     ]);
 
-    console.log('Creating a pending group call');
-    const groupCall = await GroupCall.create({
-      roomId: room1._id,
-      callRoomId: 'seed-call-1',
-      initiator: users[0]._id,
-      participants: users.map(u => ({ userId: u._id, status: 'invited' })),
-      callType: 'audio',
-      status: 'ringing'
-    });
 
     console.log('Seed complete:');
     console.log('  users:', users.map(u => ({ id: u._id, username: u.username })));
     console.log('  rooms:', [room1.name, room2.name]);
-    console.log('  groupCall:', groupCall.callRoomId);
 
     // Close mongoose connection
     await mongoose.connection.close();

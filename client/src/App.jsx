@@ -9,7 +9,6 @@ import JoinCall from './pages/JoinCall';
 import './index.css';
 
 function App() {
-  console.log('App rendering');
   return (
     <AuthProvider>
       <TranslationProvider>

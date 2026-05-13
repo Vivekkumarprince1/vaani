@@ -2,8 +2,9 @@ import React, { createContext, useContext, useState, useEffect } from 'react';
 import axios from 'axios';
 import { AuthContext } from './AuthContext';
 import { getCachedTranslation, setCachedTranslation, clearTranslationCache, prefetchModel } from '../hooks/useTranslationCache';
+import { config } from '../config/api';
 
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000/api';
+const API_URL = config.API_URL;
 
 // Create the context
 export const TranslationContext = createContext();

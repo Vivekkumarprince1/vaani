@@ -1,4 +1,5 @@
 import { io } from 'socket.io-client';
+import { config } from '../config/api';
 
 /**
  * Socket.IO Connection Manager for Next.js
@@ -9,13 +10,12 @@ class SocketManager {
   constructor() {
     this.socket = null;
     this.token = null;
-  // Default to the extracted backend running on port 4000. Can be overridden by NEXT_PUBLIC_SOCKET_URL.
-  this.baseUrl = import.meta.env.VITE_SOCKET_URL || (typeof window !== 'undefined' ? window.location.origin : 'http://localhost:4000');
-  // event -> Set of handlers
-  this.eventHandlers = new Map();
+    this.baseUrl = config.SOCKET_URL;
+    // event -> Set of handlers
+    this.eventHandlers = new Map();
     this.isConnected = false;
     this.attemptCount = 0;
-    this.maxAttempts = 10;
+    this.maxAttempts = 15;
     this.useWebSocket = true;
   }
 

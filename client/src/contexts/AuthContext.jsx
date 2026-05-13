@@ -1,8 +1,9 @@
 // src/contexts/AuthContext.jsx
 import React, { createContext, useState, useEffect } from 'react';
 import axios from 'axios';
+import { config } from '../config/api';
 
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000/api';
+const API_URL = config.API_URL;
 
 export const AuthContext = createContext();
 

@@ -35,8 +35,11 @@ router.post('/message', authenticate, MessageController.sendMessage);
 router.get('/rooms', authenticate, RoomController.getRooms);
 router.post('/rooms', authenticate, RoomController.createRoom);
 
+router.post('/instant-meeting', authenticate, GroupCallController.createInstantMeeting);
 router.get('/group-call/pending', authenticate, GroupCallController.getPending);
 router.post('/group-call/initiate', authenticate, GroupCallController.initiate);
+router.get('/group-call/by-room/:callRoomId', authenticate, GroupCallController.getByRoomId);
+router.get('/room/:roomId/meeting-link', authenticate, GroupCallController.getRoomMeetingLink);
 router.get('/group-call/:callId', authenticate, GroupCallController.getCall);
 router.post('/group-call/:callId/decline', authenticate, GroupCallController.decline);
 router.post('/group-call/:callId/join', authenticate, GroupCallController.join);

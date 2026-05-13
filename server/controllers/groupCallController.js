@@ -253,6 +253,186 @@ class GroupCallController {
   }
 
   /**
+   * Create an instant meeting — no pre-existing group required.
+   * Creates a temporary room owned by the caller, initiates a group call,
+   * and returns a shareable join link.
+   */
+  static async createInstantMeeting(req, res) {
+    try {
+      const userId = req.user.userId;
+      const { callType = 'video', meetingName } = req.body;
+
+      await dbConnect();
+
+      const name = meetingName?.trim() || `Meeting by ${req.user.username || 'user'}`;
+
+      // Create a temporary room with just the creator
+      const room = new Room({
+        name,
+        createdBy: userId,
+        participants: [userId],
+        admins: [userId],
+        roomType: 'group',
+      });
+      await room.save();
+
+      // Initiate a group call for the new room
+      const callRoomId = `group-call-${uuidv4()}`;
+      const groupCall = new GroupCall({
+        roomId: room._id,
+        callRoomId,
+        initiator: userId,
+        participants: [{ userId, status: 'joined', joinedAt: new Date() }],
+        callType,
+        status: 'ringing',
+        activeParticipants: [userId],
+      });
+      await groupCall.save();
+
+      return res.status(201).json({
+        callId: groupCall._id,
+        callRoomId,
+        roomId: room._id,
+        roomName: room.name,
+        callType,
+        joinLink: `/join/${callRoomId}`,
+      });
+    } catch (error) {
+      console.error('Error creating instant meeting:', error);
+      return res.status(500).json({ message: 'Internal server error', error: error.message });
+    }
+  }
+
+  /**
+   * Get (or create) a stable meeting link for a room.
+   * Returns the active callRoomId if a call is running, otherwise the most recent
+   * callRoomId so the link stays consistent for the group.
+   */
+  static async getRoomMeetingLink(req, res) {
+    try {
+      const userId = req.user.userId;
+      const { roomId } = req.params;
+
+      await dbConnect();
+
+      const room = await Room.findById(roomId);
+      if (!room) return res.status(404).json({ message: 'Room not found' });
+
+      const isMember = room.participants.some(p => p.toString() === userId.toString());
+      if (!isMember) return res.status(403).json({ message: 'Not a member of this room' });
+
+      // Prefer active/ringing call, fall back to most recent ended call
+      let call = await GroupCall.findOne({ roomId, status: { $in: ['ringing', 'active'] } }).sort({ createdAt: -1 });
+      if (!call) {
+        call = await GroupCall.findOne({ roomId }).sort({ createdAt: -1 });
+      }
+
+      if (call) {
+        return res.status(200).json({ callRoomId: call.callRoomId, roomName: room.name });
+      }
+
+      // No call history — generate a stable deterministic callRoomId for this room
+      // so the same room always gets the same link even before first call
+      const stableId = `group-call-room-${roomId}`;
+      return res.status(200).json({ callRoomId: stableId, roomName: room.name });
+    } catch (error) {
+      console.error('Error getting room meeting link:', error);
+      return res.status(500).json({ message: 'Internal server error', error: error.message });
+    }
+  }
+
+  /**
+   * Resolve a shareable meeting link by callRoomId.
+   * Returns the active call if one exists, otherwise returns the Room so the
+   * client can initiate a new call.  Works even when no call is currently running.
+   */
+  static async getByRoomId(req, res) {
+    try {
+      const userId = req.user.userId;
+      const { callRoomId } = req.params;
+
+      await dbConnect();
+
+      // 1. Try to find an active/ringing call with this LiveKit callRoomId
+      let groupCall = await GroupCall.findOne({
+        callRoomId,
+        status: { $in: ['ringing', 'active'] },
+      })
+        .populate('initiator', 'username email')
+        .populate('participants.userId', 'username email')
+        .populate('roomId', 'name participants');
+
+      if (groupCall) {
+        const isInstant = groupCall.roomId?.name?.startsWith('Meeting by ') || false;
+
+        if (!isInstant) {
+          // Regular group call — validate room membership
+          const roomParticipants = groupCall.roomId?.participants || [];
+          const isMember = roomParticipants.some(p => p.toString() === userId.toString());
+          if (!isMember) {
+            return res.status(403).json({ message: 'You are not a member of this group' });
+          }
+        }
+
+        // Add user to participants if not already listed (open for instant meetings)
+        const alreadyParticipant = groupCall.participants.some(
+          p => (p.userId?._id || p.userId).toString() === userId.toString()
+        );
+        if (!alreadyParticipant) {
+          groupCall.participants.push({ userId, status: 'invited' });
+          // Also add to room participants so they can re-join later
+          if (isInstant) {
+            await Room.findByIdAndUpdate(groupCall.roomId?._id || groupCall.roomId, {
+              $addToSet: { participants: userId },
+            });
+          }
+          await groupCall.save();
+        }
+
+        return res.status(200).json({ call: groupCall, hasActiveCall: true });
+      }
+
+      // 2. No active call — look up the Room that owns this callRoomId.
+      const endedCall = await GroupCall.findOne({ callRoomId })
+        .populate('roomId', 'name participants');
+
+      if (endedCall) {
+        const room = endedCall.roomId;
+        if (!room) {
+          return res.status(404).json({ message: 'Room not found for this link' });
+        }
+        const isInstant = room.name?.startsWith('Meeting by ');
+        if (!isInstant) {
+          const isMember = (room.participants || []).some(p => p.toString() === userId.toString());
+          if (!isMember) {
+            return res.status(403).json({ message: 'You are not a member of this group' });
+          }
+        }
+        return res.status(200).json({
+          hasActiveCall: false,
+          room: { _id: room._id, name: room.name },
+          isInstant,
+        });
+      }
+
+      // 3. Handle stable room-based links (format: group-call-room-<mongoId>)
+      if (callRoomId.startsWith('group-call-room-')) {
+        const roomId = callRoomId.replace('group-call-room-', '');
+        const room = await Room.findById(roomId).catch(() => null);
+        if (!room) return res.status(404).json({ message: 'This meeting link is invalid or expired' });
+        const isMember = (room.participants || []).some(p => p.toString() === userId.toString());
+        if (!isMember) return res.status(403).json({ message: 'You are not a member of this group' });
+        return res.status(200).json({ hasActiveCall: false, room: { _id: room._id, name: room.name } });
+      }
+
+      return res.status(404).json({ message: 'This meeting link is invalid or expired' });
+    } catch (error) {
+      console.error('Error resolving call by roomId:', error);
+      return res.status(500).json({ message: 'Internal server error', error: error.message });
+    }
+  }
+
+  /**
    * Get group call details
    */
   static async getCall(req, res) {
@@ -355,15 +535,24 @@ class GroupCallController {
         );
       }
 
-      // Check if user is a participant
-      const participant = groupCall.participants.find(
+      // Find or auto-add participant (instant meetings are open-invite)
+      let participant = groupCall.participants.find(
         p => p.userId.toString() === userId.toString()
       );
 
       if (!participant) {
-        return res.status(403).json(
-          { message: 'You are not a participant of this call' }
-        );
+        // Allow joining if it's an instant meeting (no strict room membership)
+        const room = await Room.findById(groupCall.roomId);
+        const isInstant = room?.name?.startsWith('Meeting by ');
+        if (!isInstant) {
+          return res.status(403).json({ message: 'You are not a participant of this call' });
+        }
+        // Add as new participant
+        groupCall.participants.push({ userId, status: 'joined', joinedAt: new Date() });
+        participant = groupCall.participants[groupCall.participants.length - 1];
+        if (room) {
+          await Room.findByIdAndUpdate(groupCall.roomId, { $addToSet: { participants: userId } });
+        }
       }
 
       // Update participant status

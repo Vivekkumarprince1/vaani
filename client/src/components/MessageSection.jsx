@@ -1,8 +1,11 @@
 
 import React, { useRef, useEffect, useState, useCallback } from 'react';
+import axios from 'axios';
 import socketManager from '../utils/socketManager';
 import { useTranslation } from '../contexts/TranslationContext';
 import CallButtons from './CallButtons';
+
+const API_URL = import.meta.env.VITE_API_URL || '/api';
 
 const MessageBubble = React.memo(({
     msg,
@@ -140,6 +143,33 @@ const MessageSection = ({
 
     // Internal state that prevents parent Dashboard from re-rendering on every keystroke
     const [message, setMessage] = useState('');
+    const [shareLinkCopied, setShareLinkCopied] = useState(false);
+    const shareLinkTimeoutRef = useRef(null);
+
+    const handleShareGroupLink = useCallback(async () => {
+        if (!selectedRoom) return;
+        try {
+            const token = localStorage.getItem('token');
+            const res = await axios.get(`${API_URL}/chat/room/${selectedRoom._id}/meeting-link`, {
+                headers: { 'x-auth-token': token },
+            });
+            const { callRoomId } = res.data;
+            const link = `${window.location.origin}/join/${callRoomId}`;
+            navigator.clipboard.writeText(link).catch(() => {
+                const el = document.createElement('textarea');
+                el.value = link;
+                document.body.appendChild(el);
+                el.select();
+                document.execCommand('copy');
+                document.body.removeChild(el);
+            });
+            setShareLinkCopied(true);
+            clearTimeout(shareLinkTimeoutRef.current);
+            shareLinkTimeoutRef.current = setTimeout(() => setShareLinkCopied(false), 2000);
+        } catch {
+            alert('Could not generate meeting link.');
+        }
+    }, [selectedRoom]);
 
     // Track translated messages
     const [translatedMessages, setTranslatedMessages] = useState(new Map());
@@ -416,6 +446,33 @@ const MessageSection = ({
                                 </button>
                             ) : null;
                         })()}
+                        {selectedRoom && (
+                            <button
+                                onClick={handleShareGroupLink}
+                                title="Copy meeting link"
+                                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium border transition-colors ${
+                                    shareLinkCopied
+                                        ? 'border-emerald-400 text-emerald-600 bg-emerald-50'
+                                        : 'border-gray-300 text-gray-600 hover:bg-gray-100'
+                                }`}
+                            >
+                                {shareLinkCopied ? (
+                                    <>
+                                        <svg xmlns="http://www.w3.org/2000/svg" className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                                            <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                                        </svg>
+                                        Copied!
+                                    </>
+                                ) : (
+                                    <>
+                                        <svg xmlns="http://www.w3.org/2000/svg" className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                                            <path strokeLinecap="round" strokeLinejoin="round" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" />
+                                        </svg>
+                                        <span className="hidden sm:inline">Share Link</span>
+                                    </>
+                                )}
+                            </button>
+                        )}
                         <CallButtons
                             onAudioCall={() => {
                                 if (selectedRoom && startGroupCall) {

@@ -5,6 +5,7 @@ import { TranslationProvider } from './contexts/TranslationContext';
 import Login from './pages/Login';
 import Register from './pages/Register';
 import Dashboard from './pages/Dashboard';
+import JoinCall from './pages/JoinCall';
 import './index.css';
 
 function App() {
@@ -18,6 +19,7 @@ function App() {
             <Route path="/login" element={<Login />} />
             <Route path="/register" element={<Register />} />
             <Route path="/dashboard" element={<Dashboard />} />
+            <Route path="/join/:callRoomId" element={<JoinCall />} />
           </Routes>
         </Router>
       </TranslationProvider>

@@ -1,27 +1,95 @@
 
-import React, { useState } from 'react';
+import React, { useState, useCallback } from 'react';
+import axios from 'axios';
 import { useTranslation } from '../contexts/TranslationContext';
 import socketManager from '../utils/socketManager';
 
-const ContactList = ({ 
-    users, 
-    rooms, 
-    selectedUser, 
-    selectedRoom, 
-    selectUser, 
-    selectRoom, 
-    createRoom, 
+const API_URL = import.meta.env.VITE_API_URL || '/api';
+
+const ContactList = ({
+    users,
+    rooms,
+    selectedUser,
+    selectedRoom,
+    selectUser,
+    selectRoom,
+    createRoom,
     showSidebar,
     onManageGroup,
     user,
     onAddContact,
     unreadByContact = {},
-    unreadByRoom = {}
+    unreadByRoom = {},
+    onInstantMeetingJoin,
 }) => {
     const { t } = useTranslation();
 
     // Tabs state: show groups or contacts
     const [showGroups, setShowGroups] = useState(false);
+
+    // Instant meeting state
+    const [showMeetingModal, setShowMeetingModal] = useState(false);
+    const [meetingName, setMeetingName] = useState('');
+    const [meetingLink, setMeetingLink] = useState(null);
+    const [meetingData, setMeetingData] = useState(null);
+    const [meetingLoading, setMeetingLoading] = useState(false);
+    const [meetingLinkCopied, setMeetingLinkCopied] = useState(false);
+
+    const handleStartMeeting = useCallback(async () => {
+        setMeetingLoading(true);
+        try {
+            const token = localStorage.getItem('token');
+            const res = await axios.post(
+                `${API_URL}/chat/instant-meeting`,
+                { meetingName: meetingName.trim() || undefined, callType: 'video' },
+                { headers: { 'x-auth-token': token } }
+            );
+            const full = `${window.location.origin}${res.data.joinLink}`;
+            setMeetingLink(full);
+            setMeetingData(res.data);
+        } catch (err) {
+            alert(err.response?.data?.message || 'Failed to create meeting');
+        } finally {
+            setMeetingLoading(false);
+        }
+    }, [meetingName]);
+
+    const handleCopyMeetingLink = useCallback(() => {
+        if (!meetingLink) return;
+        navigator.clipboard.writeText(meetingLink).catch(() => {
+            const el = document.createElement('textarea');
+            el.value = meetingLink;
+            document.body.appendChild(el);
+            el.select();
+            document.execCommand('copy');
+            document.body.removeChild(el);
+        });
+        setMeetingLinkCopied(true);
+        setTimeout(() => setMeetingLinkCopied(false), 2000);
+    }, [meetingLink]);
+
+    const handleJoinOwnMeeting = useCallback(() => {
+        if (!meetingData) return;
+        setShowMeetingModal(false);
+        setMeetingLink(null);
+        setMeetingData(null);
+        setMeetingName('');
+        onInstantMeetingJoin?.({
+            callId: meetingData.callId,
+            callRoomId: meetingData.callRoomId,
+            roomId: meetingData.roomId,
+            roomName: meetingData.roomName,
+            callType: meetingData.callType,
+        });
+    }, [meetingData, onInstantMeetingJoin]);
+
+    const handleCloseMeetingModal = () => {
+        setShowMeetingModal(false);
+        setMeetingLink(null);
+        setMeetingData(null);
+        setMeetingName('');
+        setMeetingLoading(false);
+    };
 
     // Helper function to format last seen time
     const formatLastSeen = (lastSeen) => {
@@ -220,7 +288,117 @@ const ContactList = ({
                         </div>
                     )}
                 </div>
+
+                {/* Floating "Start Meeting" button */}
+                <div className="p-4 border-t border-gray-100">
+                    <button
+                        onClick={() => setShowMeetingModal(true)}
+                        className="w-full flex items-center justify-center gap-2 px-4 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl font-medium text-sm transition-colors shadow-md"
+                    >
+                        <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                        </svg>
+                        New Meeting
+                    </button>
+                </div>
             </div>
+
+            {/* Instant Meeting Modal */}
+            {showMeetingModal && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black bg-opacity-60">
+                    <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm overflow-hidden">
+                        {/* Header */}
+                        <div className="px-6 py-4 border-b border-gray-100 flex items-center justify-between">
+                            <div className="flex items-center gap-2">
+                                <div className="w-8 h-8 bg-indigo-100 rounded-full flex items-center justify-center">
+                                    <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-indigo-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                                        <path strokeLinecap="round" strokeLinejoin="round" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                                    </svg>
+                                </div>
+                                <h2 className="text-base font-semibold text-gray-800">New Meeting</h2>
+                            </div>
+                            <button onClick={handleCloseMeetingModal} className="text-gray-400 hover:text-gray-600 transition-colors">
+                                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                                </svg>
+                            </button>
+                        </div>
+
+                        <div className="p-6">
+                            {!meetingLink ? (
+                                /* Step 1 — name + create */
+                                <>
+                                    <p className="text-sm text-gray-500 mb-4">Create an instant meeting and share the link with anyone.</p>
+                                    <div className="mb-4">
+                                        <label className="block text-xs font-medium text-gray-600 mb-1">Meeting name (optional)</label>
+                                        <input
+                                            type="text"
+                                            value={meetingName}
+                                            onChange={e => setMeetingName(e.target.value)}
+                                            onKeyDown={e => e.key === 'Enter' && !meetingLoading && handleStartMeeting()}
+                                            placeholder={`Meeting by ${user?.username || 'me'}`}
+                                            className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400"
+                                            autoFocus
+                                        />
+                                    </div>
+                                    <button
+                                        onClick={handleStartMeeting}
+                                        disabled={meetingLoading}
+                                        className="w-full py-2.5 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-60 text-white rounded-xl font-medium text-sm transition-colors flex items-center justify-center gap-2"
+                                    >
+                                        {meetingLoading ? (
+                                            <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                                        ) : (
+                                            <>
+                                                <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                                                    <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
+                                                </svg>
+                                                Create Meeting
+                                            </>
+                                        )}
+                                    </button>
+                                </>
+                            ) : (
+                                /* Step 2 — share link */
+                                <>
+                                    <p className="text-sm text-gray-500 mb-3">Share this link with people you want to meet with.</p>
+
+                                    {/* Link box */}
+                                    <div className="flex items-center gap-2 bg-gray-50 border border-gray-200 rounded-lg px-3 py-2 mb-4">
+                                        <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-gray-400 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                                            <path strokeLinecap="round" strokeLinejoin="round" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" />
+                                        </svg>
+                                        <span className="text-xs text-gray-700 truncate flex-1 select-all">{meetingLink}</span>
+                                        <button
+                                            onClick={handleCopyMeetingLink}
+                                            className={`flex-shrink-0 text-xs font-medium px-2 py-1 rounded-md transition-colors ${meetingLinkCopied ? 'bg-emerald-100 text-emerald-700' : 'bg-gray-200 hover:bg-gray-300 text-gray-600'}`}
+                                        >
+                                            {meetingLinkCopied ? 'Copied!' : 'Copy'}
+                                        </button>
+                                    </div>
+
+                                    {/* Action buttons */}
+                                    <button
+                                        onClick={handleJoinOwnMeeting}
+                                        className="w-full py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl font-medium text-sm transition-colors flex items-center justify-center gap-2 mb-2"
+                                    >
+                                        <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                                            <path strokeLinecap="round" strokeLinejoin="round" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 002 2v8a2 2 0 002 2z" />
+                                        </svg>
+                                        Start Meeting Now
+                                    </button>
+                                    <button
+                                        onClick={handleCloseMeetingModal}
+                                        className="w-full py-2 text-gray-500 hover:text-gray-700 text-sm transition-colors"
+                                    >
+                                        Share later
+                                    </button>
+                                </>
+                            )}
+                        </div>
+                    </div>
+                </div>
+            )}
         </aside>
     );
 };

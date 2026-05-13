@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useContext, useRef, useCallback } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useLocation } from 'react-router-dom';
 import axios from 'axios';
 import { AuthContext } from '../contexts/AuthContext';
 import { useTranslation } from '../contexts/TranslationContext';
@@ -27,6 +27,7 @@ const API_URL = import.meta.env.VITE_API_URL || '/api';
 
 const Dashboard = () => {
   const navigate = useNavigate();
+  const location = useLocation();
   const { user, isAuthenticated, loading: authLoading } = useContext(AuthContext);
   const { currentLanguage, changeLanguage, translateText, translateTexts } = useTranslation();
 
@@ -1123,6 +1124,17 @@ const Dashboard = () => {
     }
   }, [isAuthenticated, user]);
 
+  // Handle auto-join from shareable meeting link (/join/:callRoomId redirect)
+  useEffect(() => {
+    if (!isAuthenticated || !user) return;
+    const callData = location.state?.autoJoinGroupCall;
+    if (!callData) return;
+    // Clear location state so refreshing the page doesn't re-trigger
+    navigate(location.pathname, { replace: true, state: {} });
+    setGroupCallData(callData);
+    setInGroupCall(true);
+  }, [isAuthenticated, user, location.state]);
+
   // Listen for loadOlderMessages events from MessageSection (scroll to top)
   useEffect(() => {
     const onLoadOlder = async () => {
@@ -1841,6 +1853,10 @@ const Dashboard = () => {
             }}
             unreadByContact={unreadByContact}
             unreadByRoom={unreadByRoom}
+            onInstantMeetingJoin={(callData) => {
+              setGroupCallData(callData);
+              setInGroupCall(true);
+            }}
           />
         </div>
 
@@ -1881,6 +1897,11 @@ const Dashboard = () => {
                 }}
                 unreadByContact={unreadByContact}
                 unreadByRoom={unreadByRoom}
+                onInstantMeetingJoin={(callData) => {
+                  setGroupCallData(callData);
+                  setInGroupCall(true);
+                  setShowSidebar(false);
+                }}
               />
             </div>
           </>

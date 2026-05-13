@@ -1,4 +1,4 @@
-import React, { useEffect, useCallback, useState } from 'react';
+import React, { useEffect, useCallback, useState, useRef } from 'react';
 import { Track } from 'livekit-client';
 import { useTranslation } from '../contexts/TranslationContext';
 import CallControls from './VideoCallComponents/CallControls';
@@ -50,6 +50,28 @@ const GroupVideoCall = ({
   // ── Local UI state ────────────────────────────────────────────────────────
   const [isMuted, setIsMuted] = useState(false);
   const [isCameraOff, setIsCameraOff] = useState(callType === 'audio');
+  const [linkCopied, setLinkCopied] = useState(false);
+  const copyTimeoutRef = useRef(null);
+
+  const handleCopyLink = useCallback(() => {
+    const link = `${window.location.origin}/join/${callRoomId}`;
+    navigator.clipboard.writeText(link).then(() => {
+      setLinkCopied(true);
+      clearTimeout(copyTimeoutRef.current);
+      copyTimeoutRef.current = setTimeout(() => setLinkCopied(false), 2000);
+    }).catch(() => {
+      // Fallback for browsers that block clipboard without interaction
+      const el = document.createElement('textarea');
+      el.value = link;
+      document.body.appendChild(el);
+      el.select();
+      document.execCommand('copy');
+      document.body.removeChild(el);
+      setLinkCopied(true);
+      clearTimeout(copyTimeoutRef.current);
+      copyTimeoutRef.current = setTimeout(() => setLinkCopied(false), 2000);
+    });
+  }, [callRoomId]);
 
   // ── Translation + transcription pipeline ─────────────────────────────────
   const localAudioStream = localParticipant
@@ -179,6 +201,31 @@ const GroupVideoCall = ({
               {isTranslatedAudioEnabled ? '🔊' : '🔇'} TL
             </button>
           )}
+          <button
+            onClick={handleCopyLink}
+            title="Copy meeting link"
+            className={`text-xs px-2 py-0.5 rounded border transition-colors flex items-center gap-1 ${
+              linkCopied
+                ? 'border-emerald-500 text-emerald-400 bg-emerald-900/30'
+                : 'border-gray-600 text-gray-300 bg-gray-800/50 hover:border-gray-400'
+            }`}
+          >
+            {linkCopied ? (
+              <>
+                <svg xmlns="http://www.w3.org/2000/svg" className="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                </svg>
+                Copied!
+              </>
+            ) : (
+              <>
+                <svg xmlns="http://www.w3.org/2000/svg" className="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" />
+                </svg>
+                Share
+              </>
+            )}
+          </button>
           <span className="text-xs text-indigo-300 bg-indigo-900/50 px-2 py-0.5 rounded">
             {currentLanguage?.toUpperCase()}
           </span>

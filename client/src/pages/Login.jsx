@@ -45,7 +45,13 @@ const Login = () => {
     try {
       const result = await login(formData.mobileNumber, formData.password);
       if (result.success) {
-        navigate('/dashboard');
+        const pendingCallRoomId = sessionStorage.getItem('vaani_join_callRoomId');
+        if (pendingCallRoomId) {
+          sessionStorage.removeItem('vaani_join_callRoomId');
+          navigate(`/join/${pendingCallRoomId}`);
+        } else {
+          navigate('/dashboard');
+        }
       } else {
         setError(result.error);
       }

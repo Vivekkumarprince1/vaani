@@ -37,7 +37,16 @@ class HistoryController {
       .populate('receiver', 'username preferredLanguage')
       .sort({ timestamp: 1 });
 
-    return res.json({ messages, hasMore: false });
+    // Convert Buffer to base64 for client transmission
+    const processedMessages = messages.map(msg => {
+      const msgObj = msg.toObject();
+      if (msgObj.media && msgObj.media.data && Buffer.isBuffer(msgObj.media.data)) {
+        msgObj.media.data = msgObj.media.data.toString('base64');
+      }
+      return msgObj;
+    });
+
+    return res.json({ messages: processedMessages, hasMore: false });
   } catch (err) {
     console.error('Get chat history error:', err);
     return res.status(500).json({ error: 'Server error' });

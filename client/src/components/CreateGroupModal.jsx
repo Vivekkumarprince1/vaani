@@ -2,7 +2,7 @@
 import React, { useState } from 'react';
 import { useTranslation } from '../contexts/TranslationContext';
 
-const CreateGroupModal = ({ isOpen, onClose, users, onCreateGroup }) => {
+const CreateGroupModal = ({ isOpen, onClose, users = [], onCreateGroup }) => {
   const { t } = useTranslation();
   const [groupName, setGroupName] = useState('');
   const [groupDescription, setGroupDescription] = useState('');
@@ -91,7 +91,7 @@ const CreateGroupModal = ({ isOpen, onClose, users, onCreateGroup }) => {
                 Add Members ({selectedUsers.length} selected)
               </label>
               <div className="max-h-48 overflow-y-auto border border-gray-300 rounded-md">
-                {users.map(user => (
+                {Array.isArray(users) && users.map(user => (
                   <div
                     key={user.id}
                     className="flex items-center p-3 hover:bg-gray-50 cursor-pointer"
@@ -119,6 +119,11 @@ const CreateGroupModal = ({ isOpen, onClose, users, onCreateGroup }) => {
                     </div>
                   </div>
                 ))}
+                {(!Array.isArray(users) || users.length === 0) && (
+                  <div className="p-3 text-center text-gray-500 text-sm">
+                    No users available
+                  </div>
+                )}
               </div>
             </div>
           </div>

@@ -2,6 +2,7 @@ import React, { useState, useEffect, useContext, useRef, useCallback } from 'rea
 import { useNavigate, useLocation } from 'react-router-dom';
 import axios from 'axios';
 import { AuthContext } from '../contexts/AuthContext';
+import { ThemeContext } from '../contexts/ThemeContext';
 import { useTranslation } from '../contexts/TranslationContext';
 import socketManager from '../utils/socketManager';
 import { getIceServers } from '../utils/webrtcConfig';
@@ -20,6 +21,7 @@ import NotificationSettings from '../components/NotificationSettings';
 import callManager from '../managers/CallManager';
 import signalingService from '../services/SignalingService';
 import mediaTrackManager from '../rtc/MediaTrackManager';
+import { Card, Button, Badge, Modal } from '../components/ui';
 
 
 
@@ -83,6 +85,8 @@ const Dashboard = () => {
   // Notification settings
   const [showNotificationSettings, setShowNotificationSettings] = useState(false);
   const [notificationPermission, setNotificationPermission] = useState('default');
+
+  // Media preview state has been moved to MessageSection.jsx
 
   const socketInstance = socketManager.getSocket();
 
@@ -1256,8 +1260,8 @@ const Dashboard = () => {
   };
 
   // Send message
-  const sendMessage = async (messageText) => {
-    if (!messageText.trim()) return;
+  const sendMessage = async ({ content, media }) => {
+    if ((!content || !content.trim()) && !media) return;
 
     const clientTempId = `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
     const optimisticMessage = {
@@ -1265,13 +1269,14 @@ const Dashboard = () => {
       id: clientTempId,
       clientTempId,
       sender: { _id: user?._id || user?.id, username: user?.username || user?.name },
-      content: messageText,
-      originalContent: messageText,
+      content: content || '',
+      originalContent: content || '',
       timestamp: new Date().toISOString(),
       status: 'queued',
       room: selectedRoom?._id || null,
       receiver: selectedUser?.id || null,
-      isGroupMessage: Boolean(selectedRoom)
+      isGroupMessage: Boolean(selectedRoom),
+      media: media || null
     };
 
     // Add optimistic message to UI immediately
@@ -1280,7 +1285,8 @@ const Dashboard = () => {
     try {
       const token = localStorage.getItem('token');
       const payload = {
-        content: messageText,
+        content: content || '',
+        media: media || null,
         clientTempId,
         ...(selectedUser ? { receiverId: selectedUser.id } : { roomId: selectedRoom._id })
       };
@@ -1308,11 +1314,6 @@ const Dashboard = () => {
   // Handle language change
   const handleLanguageChange = async (language) => {
     return await changeLanguage(language);
-  };
-
-  // Handle file change
-  const handleFileChange = (e) => {
-    console.log('File selected:', e.target.files[0]);
   };
 
   // Initialize peer connection
@@ -1818,7 +1819,7 @@ const Dashboard = () => {
   }
 
   return (
-    <div className="flex flex-col bg-gray-100">
+    <div className="flex flex-col h-screen bg-[var(--color-bg-primary)]">
       {/* Header */}
       <Header
         user={user}
@@ -1828,9 +1829,9 @@ const Dashboard = () => {
       />
 
       {/* Main content - responsive layout */}
-      <div className="flex flex-1 pt-16">
+      <div className="flex flex-1 pt-16 overflow-hidden">
         {/* Sidebar - hidden on mobile, visible on lg */}
-        <div className="hidden lg:flex lg:flex-col w-80 border-r border-gray-200">
+        <div className="hidden lg:flex lg:flex-col w-80 border-r border-[var(--color-border)] bg-[var(--color-bg-secondary)] overflow-y-auto">
           <ContactList
             users={users}
             rooms={rooms}
@@ -1841,8 +1842,6 @@ const Dashboard = () => {
             createRoom={createRoom}
             showSidebar={showSidebar}
             onManageGroup={(room) => {
-              console.log('Opening group management for room:', room);
-              console.log('Current user:', user);
               setManagingRoom(room);
             }}
             user={user}
@@ -1864,10 +1863,10 @@ const Dashboard = () => {
         {showSidebar && (
           <>
             <div
-              className="fixed inset-0 bg-opacity-50 z-10 lg:hidden"
+              className="fixed inset-0 bg-black/50 z-10 lg:hidden"
               onClick={() => setShowSidebar(false)}
             />
-            <div className="fixed left-0 top-16 bottom-0 w-80 z-20 lg:hidden">
+            <div className="fixed left-0 top-16 bottom-0 w-80 z-20 lg:hidden bg-[var(--color-bg-secondary)] overflow-y-auto shadow-xl">
               <ContactList
                 users={users}
                 rooms={rooms}
@@ -1884,8 +1883,6 @@ const Dashboard = () => {
                 createRoom={createRoom}
                 showSidebar={showSidebar}
                 onManageGroup={(room) => {
-                  console.log('Opening group management for room:', room);
-                  console.log('Current user:', user);
                   setManagingRoom(room);
                 }}
                 user={user}
@@ -1907,24 +1904,24 @@ const Dashboard = () => {
           </>
         )}
 
-        {/* Main chat area or video call */}
-        {inGroupCall && groupCallData ? (
-          <div className="flex-1 flex flex-col">
-            {socketInstance ? (
-              <GroupVideoCall
-                socket={socketInstance}
-                callRoomId={groupCallData.callRoomId}
-                roomName={groupCallData.roomName}
-                currentUserId={user?._id || user?.id}
-                onEndCall={endGroupCall}
-                callType={groupCallData.callType}
-              />
-            ) : (
-              <Loader message="Preparing group call..." />
-            )}
-          </div>
-        ) : inCall ? (
-          <div className="flex-1 flex flex-col">
+        {/* Main content area */}
+        <div className="flex-1 flex flex-col overflow-hidden bg-[var(--color-bg-primary)]">
+          {inGroupCall && groupCallData ? (
+            <>
+              {socketInstance ? (
+                <GroupVideoCall
+                  socket={socketInstance}
+                  callRoomId={groupCallData.callRoomId}
+                  roomName={groupCallData.roomName}
+                  currentUserId={user?._id || user?.id}
+                  onEndCall={endGroupCall}
+                  callType={groupCallData.callType}
+                />
+              ) : (
+                <Loader message="Preparing group call..." />
+              )}
+            </>
+          ) : inCall ? (
             <VideoCall
               localStream={localStream}
               remoteStream={remoteStream}
@@ -1941,237 +1938,264 @@ const Dashboard = () => {
               remoteOriginal={remoteOriginal}
               remoteTranslated={remoteTranslated}
             />
-          </div>
-        ) : (selectedUser || selectedRoom) ? (
-          <MessageSection
-            selectedUser={selectedUser}
-            selectedRoom={selectedRoom}
-            messages={messages}
-            sendMessage={sendMessage}
-            handleFileChange={handleFileChange}
-            isTyping={isTyping}
-            user={user}
-            startCall={startCall}
-            formatTime={formatTime}
-            onManageGroup={(room) => {
-              // console.log('Opening group management from chat header for room:', room);
-              // console.log('Current user in dashboard:', user);
-              // console.log('User ID:', user?.id, 'User _id:', user?._id);
-              setManagingRoom(room);
-            }}
-          />
-        ) : (
-          <div className="flex-1 flex items-center justify-center bg-gray-50">
-            <div className="text-center">
-              <svg xmlns="http://www.w3.org/2000/svg" className="h-24 w-24 mx-auto text-gray-300 mb-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
-              </svg>
-              <p className="text-xl text-gray-500 mb-2">Welcome to Vani!</p>
-              <p className="text-gray-400">Select a contact to start chatting</p>
+          ) : (selectedUser || selectedRoom) ? (
+            <MessageSection
+              selectedUser={selectedUser}
+              selectedRoom={selectedRoom}
+              messages={messages}
+              sendMessage={sendMessage}
+              isTyping={isTyping}
+              user={user}
+              startCall={startCall}
+              formatTime={formatTime}
+              onManageGroup={(room) => {
+                setManagingRoom(room);
+              }}
+            />
+          ) : (
+            <div className="flex-1 flex flex-col items-center justify-center p-8">
+              <div className="text-center space-y-6">
+                <div className="w-24 h-24 bg-gradient-to-br from-[var(--color-primary)] to-[var(--color-primary-dark)] rounded-2xl flex items-center justify-center mx-auto shadow-lg">
+                  <svg className="w-12 h-12 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
+                  </svg>
+                </div>
+                <div>
+                  <h2 className="text-2xl font-bold text-[var(--color-text-primary)] mb-2">Welcome to Vaani!</h2>
+                  <p className="text-[var(--color-text-secondary)]">Select a contact or group to start chatting</p>
+                </div>
+                <div className="flex gap-4 justify-center pt-4">
+                  <Button
+                    variant="primary"
+                    onClick={() => {
+                      setAddContactPhone('');
+                      setAddContactStatus('');
+                      setShowAddContactModal(true);
+                    }}
+                  >
+                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+                    </svg>
+                    Add Contact
+                  </Button>
+                  <Button
+                    variant="secondary"
+                    onClick={() => setShowCreateGroupModal(true)}
+                  >
+                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+                    </svg>
+                    Create Group
+                  </Button>
+                </div>
+              </div>
             </div>
-          </div>
-        )}
+          )}
+        </div>
       </div>
 
-      {/* Incoming call notification */}
+      {/* Incoming call modal */}
       {incomingCall && !inCall && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-          <div className="bg-white rounded-lg p-8 max-w-md w-full mx-4 shadow-2xl">
-            <div className="text-center">
-              <div className="mb-4">
-                <div className="w-20 h-20 bg-blue-500 rounded-full flex items-center justify-center mx-auto mb-4">
-                  <span className="text-3xl font-bold text-white">
-                    {incomingCall.fromName?.[0]?.toUpperCase() || 'U'}
-                  </span>
-                </div>
-                <h3 className="text-2xl font-semibold text-gray-800 mb-2">
-                  {incomingCall.fromName}
-                </h3>
-                <p className="text-gray-600 mb-4">
-                  Incoming {incomingCall.callType} call...
-                </p>
-              </div>
-
-              <div className="flex gap-4 justify-center">
-                <button
-                  onClick={rejectCall}
-                  className="px-6 py-3 bg-red-500 text-white rounded-full hover:bg-red-600 transition-colors flex items-center gap-2"
-                >
-                  <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                  </svg>
-                  Decline
-                </button>
-                <button
-                  onClick={answerCall}
-                  className="px-6 py-3 bg-green-500 text-white rounded-full hover:bg-green-600 transition-colors flex items-center gap-2"
-                  disabled={acceptingCall}
-                >
-                  <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 5a2 2 0 012-2h3.28a1 1 0 01.948.684l1.498 4.493a1 1 0 01-.502 1.21l-2.257 1.13a11.042 11.042 0 005.516 5.516l1.13-2.257a1 1 0 011.21-.502l4.493 1.498a1 1 0 01.684.949V19a2 2 0 01-2 2h-1C9.716 21 3 14.284 3 6V5z" />
-                  </svg>
-                  {acceptingCall ? 'Joining...' : 'Accept'}
-                </button>
+        <Modal
+          isOpen={true}
+          onClose={rejectCall}
+          showCloseButton={false}
+          closeOnBackdropClick={false}
+          closeOnEscape={false}
+          size="md"
+        >
+          <div className="text-center space-y-6">
+            {/* Avatar */}
+            <div className="flex justify-center">
+              <div className="w-24 h-24 bg-gradient-to-br from-[var(--color-primary)] to-[var(--color-primary-dark)] rounded-full flex items-center justify-center shadow-lg">
+                <span className="text-4xl font-bold text-white">
+                  {incomingCall.fromName?.[0]?.toUpperCase() || 'U'}
+                </span>
               </div>
             </div>
+
+            {/* Call info */}
+            <div>
+              <h3 className="text-2xl font-bold text-[var(--color-text-primary)]">
+                {incomingCall.fromName}
+              </h3>
+              <Badge variant="info" className="mt-2 inline-block">
+                <span className="inline-flex gap-1 items-center">
+                  <span className="w-2 h-2 bg-[var(--color-info)] rounded-full animate-pulse"></span>
+                  Incoming {incomingCall.callType} call
+                </span>
+              </Badge>
+            </div>
+
+            {/* Action buttons */}
+            <div className="flex gap-4 justify-center">
+              <Button
+                onClick={rejectCall}
+                variant="danger"
+                className="flex-1 h-12 flex items-center justify-center gap-2"
+              >
+                <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
+                  <path d="M6.62 10.79c1.44 2.83 3.76 5.14 6.59 6.59l2.2-2.2c.27-.27.67-.36 1.02-.24 1.12.37 2.33.57 3.57.57.55 0 1 .45 1 1V20c0 .55-.45 1-1 1-9.39 0-17-7.61-17-17 0-.55.45-1 1-1h3.5c.55 0 1 .45 1 1 0 1.25.2 2.45.57 3.57.11.35.03.74-.25 1.02l-2.2 2.2z" />
+                </svg>
+                Decline
+              </Button>
+              <Button
+                onClick={answerCall}
+                disabled={acceptingCall}
+                loading={acceptingCall}
+                className="flex-1 h-12 flex items-center justify-center gap-2"
+              >
+                <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
+                  <path d="M6.62 10.79c1.44 2.83 3.76 5.14 6.59 6.59l2.2-2.2c.27-.27.67-.36 1.02-.24 1.12.37 2.33.57 3.57.57.55 0 1 .45 1 1V20c0 .55-.45 1-1 1-9.39 0-17-7.61-17-17 0-.55.45-1 1-1h3.5c.55 0 1 .45 1 1 0 1.25.2 2.45.57 3.57.11.35.03.74-.25 1.02l-2.2 2.2z" />
+                </svg>
+                Accept
+              </Button>
+            </div>
           </div>
-        </div>
+        </Modal>
       )}
 
-      {/* Incoming group call notification */}
+      {/* Incoming group call modal */}
       {incomingGroupCall && !inGroupCall && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-          <div className="bg-white rounded-lg p-8 max-w-md w-full mx-4 shadow-2xl">
-            <div className="text-center">
-              <div className="mb-4">
-                <div className="w-20 h-20 bg-purple-500 rounded-full flex items-center justify-center mx-auto mb-4">
-                  <svg xmlns="http://www.w3.org/2000/svg" className="h-10 w-10 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z" />
-                  </svg>
-                </div>
-                <h3 className="text-2xl font-semibold text-gray-800 mb-2">
-                  {incomingGroupCall.roomName}
-                </h3>
-                <p className="text-gray-600 mb-2">
-                  Incoming group {incomingGroupCall.callType} call
-                </p>
-                <p className="text-sm text-gray-500 mb-4">
-                  from {incomingGroupCall.initiator?.username}
-                </p>
-              </div>
-
-              <div className="flex gap-4 justify-center">
-                <button
-                  onClick={() => declineGroupCall(incomingGroupCall)}
-                  className="px-6 py-3 bg-red-500 text-white rounded-full hover:bg-red-600 transition-colors flex items-center gap-2"
-                >
-                  <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                  </svg>
-                  Decline
-                </button>
-                <button
-                  onClick={() => joinGroupCall(incomingGroupCall)}
-                  className="px-6 py-3 bg-green-500 text-white rounded-full hover:bg-green-600 transition-colors flex items-center gap-2"
-                >
-                  <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
-                  </svg>
-                  Join Call
-                </button>
+        <Modal
+          isOpen={true}
+          onClose={() => declineGroupCall(incomingGroupCall)}
+          showCloseButton={false}
+          closeOnBackdropClick={false}
+          closeOnEscape={false}
+          size="md"
+        >
+          <div className="text-center space-y-6">
+            {/* Avatar */}
+            <div className="flex justify-center">
+              <div className="w-24 h-24 bg-gradient-to-br from-[var(--color-primary)] to-[var(--color-primary-dark)] rounded-full flex items-center justify-center shadow-lg">
+                <svg className="w-12 h-12 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 20h5v-2a3 3 0 00-5.856-1.487M15 10a3 3 0 11-6 0 3 3 0 016 0z" />
+                </svg>
               </div>
             </div>
+
+            {/* Call info */}
+            <div>
+              <h3 className="text-2xl font-bold text-[var(--color-text-primary)]">
+                {incomingGroupCall.initiator?.username || 'Someone'}
+              </h3>
+              <p className="text-[var(--color-text-secondary)] text-sm mt-1">
+                invited you to: <span className="font-semibold text-[var(--color-text-primary)]">{incomingGroupCall.roomName}</span>
+              </p>
+              <Badge variant="success" className="mt-3 inline-block">
+                <span className="inline-flex gap-1 items-center">
+                  <span className="w-2 h-2 bg-[var(--color-success)] rounded-full animate-pulse"></span>
+                  Group {incomingGroupCall.callType} call
+                </span>
+              </Badge>
+            </div>
+
+            {/* Action buttons */}
+            <div className="flex gap-4 justify-center">
+              <Button
+                onClick={() => declineGroupCall(incomingGroupCall)}
+                variant="danger"
+                className="flex-1 h-12 flex items-center justify-center gap-2"
+              >
+                <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
+                  <path d="M6.62 10.79c1.44 2.83 3.76 5.14 6.59 6.59l2.2-2.2c.27-.27.67-.36 1.02-.24 1.12.37 2.33.57 3.57.57.55 0 1 .45 1 1V20c0 .55-.45 1-1 1-9.39 0-17-7.61-17-17 0-.55.45-1 1-1h3.5c.55 0 1 .45 1 1 0 1.25.2 2.45.57 3.57.11.35.03.74-.25 1.02l-2.2 2.2z" />
+                </svg>
+                Decline
+              </Button>
+              <Button
+                onClick={() => joinGroupCall(incomingGroupCall)}
+                className="flex-1 h-12 flex items-center justify-center gap-2"
+              >
+                <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
+                  <path d="M6.62 10.79c1.44 2.83 3.76 5.14 6.59 6.59l2.2-2.2c.27-.27.67-.36 1.02-.24 1.12.37 2.33.57 3.57.57.55 0 1 .45 1 1V20c0 .55-.45 1-1 1-9.39 0-17-7.61-17-17 0-.55.45-1 1-1h3.5c.55 0 1 .45 1 1 0 1.25.2 2.45.57 3.57.11.35.03.74-.25 1.02l-2.2 2.2z" />
+                </svg>
+                Join Call
+              </Button>
+            </div>
           </div>
-        </div>
+        </Modal>
       )}
 
-      {/* Socket connection status */}
-      <SocketStatus />
-
-      {/* Notification Settings Modal */}
-      {showNotificationSettings && (
-        <div className="fixed bottom-4 right-4 z-50 max-w-md">
-          <NotificationSettings
-            onClose={() => {
-              setShowNotificationSettings(false);
-              setNotificationPermission(notificationManager.getPermissionStatus());
-            }}
-          />
-        </div>
+      {/* Modals */}
+      {showCreateGroupModal && (
+        <CreateGroupModal
+          isOpen={showCreateGroupModal}
+          onClose={() => setShowCreateGroupModal(false)}
+          users={users}
+          onCreateGroup={(newRoom) => {
+            setShowCreateGroupModal(false);
+            fetchRooms();
+            selectRoom(newRoom);
+          }}
+        />
       )}
-
-      <CreateGroupModal
-        isOpen={showCreateGroupModal}
-        onClose={() => setShowCreateGroupModal(false)}
-        users={users}
-        onCreateGroup={handleCreateGroup}
-      />
-
-      <GroupManagementModal
-        isOpen={!!managingRoom}
-        onClose={() => setManagingRoom(null)}
-        room={managingRoom}
-        users={users}
-        currentUserId={user?._id?.toString()}
-        onRoomUpdate={handleRoomUpdate}
-      />
 
       {showAddContactModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black bg-opacity-50">
-          <div className="bg-white rounded-xl shadow-xl w-full max-w-md overflow-hidden flex flex-col">
-            <div className="px-6 py-4 border-b border-gray-200 flex justify-between items-center">
-              <h2 className="text-xl font-bold text-gray-800">Add New Contact</h2>
-              <button 
+        <Modal
+          isOpen={showAddContactModal}
+          onClose={() => setShowAddContactModal(false)}
+          title="Add Contact"
+          size="md"
+        >
+          <form onSubmit={handleAddContact} className="space-y-4">
+            <input
+              type="tel"
+              value={addContactPhone}
+              onChange={(e) => setAddContactPhone(e.target.value)}
+              placeholder="Enter mobile number"
+              pattern="[0-9]{10}"
+              className="w-full px-4 py-2 border border-[var(--color-border)] rounded-lg bg-[var(--color-bg-primary)] text-[var(--color-text-primary)] placeholder-[var(--color-text-tertiary)] focus:outline-none focus:ring-2 focus:ring-[var(--color-primary)]"
+              required
+            />
+            {addContactStatus && (
+              <div className={`p-3 rounded-lg text-sm ${
+                addContactStatus.includes('successfully')
+                  ? 'bg-[var(--color-success-bg)] text-[var(--color-success)]'
+                  : 'bg-[var(--color-error-bg)] text-[var(--color-error)]'
+              }`}>
+                {addContactStatus}
+              </div>
+            )}
+            <div className="flex gap-3">
+              <Button
+                type="button"
+                variant="ghost"
                 onClick={() => setShowAddContactModal(false)}
-                className="text-gray-400 hover:text-gray-600 transition-colors"
+                className="flex-1"
               >
-                <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12" />
-                </svg>
-              </button>
+                Cancel
+              </Button>
+              <Button
+                type="submit"
+                className="flex-1"
+              >
+                Add Contact
+              </Button>
             </div>
-            
-            <div className="p-6">
-              <form onSubmit={handleAddContact}>
-                <div className="mb-4">
-                  <label className="block text-sm font-medium text-gray-700 mb-1">
-                    Mobile Number
-                  </label>
-                  <input
-                    type="text"
-                    value={addContactPhone}
-                    onChange={(e) => setAddContactPhone(e.target.value)}
-                    placeholder="Enter mobile number"
-                    className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-emerald-500 focus:border-emerald-500"
-                    required
-                  />
-                </div>
-                
-                {addContactStatus && (
-                  <div className={`mb-4 p-3 rounded-md text-sm ${
-                    addContactStatus.includes('success') ? 'bg-green-50 text-green-700 border border-green-200' : 'bg-red-50 text-red-700 border border-red-200'
-                  }`}>
-                    {addContactStatus}
-                  </div>
-                )}
-
-                {showInviteOption && (
-                  <div className="mb-4">
-                    <a
-                      href={`https://api.whatsapp.com/send?phone=${addContactPhone.replace(/\\D/g, '')}&text=${encodeURIComponent("Hey! Join me on Vaani, a real-time multilingual communication platform. Let's talk in our native languages! " + window.location.origin)}`}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="w-full flex items-center justify-center gap-2 px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-green-600 hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-500"
-                    >
-                      <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                        <path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51a12.8 12.8 0 00-.57-.01c-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413Z"/>
-                      </svg>
-                      Invite via WhatsApp
-                    </a>
-                  </div>
-                )}
-                
-                <div className="flex justify-end gap-3 mt-6">
-                  <button
-                    type="button"
-                    onClick={() => setShowAddContactModal(false)}
-                    className="px-4 py-2 bg-white border border-gray-300 rounded-md shadow-sm text-sm font-medium text-gray-700 hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-emerald-500"
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    type="submit"
-                    disabled={!addContactPhone.trim()}
-                    className="px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-emerald-600 hover:bg-emerald-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed"
-                  >
-                    Add Contact
-                  </button>
-                </div>
-              </form>
-            </div>
-          </div>
-        </div>
+          </form>
+        </Modal>
       )}
+
+      {managingRoom && (
+        <GroupManagementModal
+          room={managingRoom}
+          onClose={() => setManagingRoom(null)}
+          onUpdate={() => {
+            fetchRooms();
+            setManagingRoom(null);
+          }}
+          currentUser={user}
+        />
+      )}
+
+      {showNotificationSettings && (
+        <NotificationSettings
+          onClose={() => setShowNotificationSettings(false)}
+        />
+      )}
+
+
     </div>
   );
 };

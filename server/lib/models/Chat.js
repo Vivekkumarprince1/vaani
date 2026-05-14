@@ -11,12 +11,10 @@ const chatSchema = new mongoose.Schema({
     ref: 'User'
   },
   originalContent: {
-    type: String,
-    required: true
+    type: String
   },
   content: {
-    type: String,
-    required: true
+    type: String
   },
   originalLanguage: {
     type: String,
@@ -26,6 +24,20 @@ const chatSchema = new mongoose.Schema({
     type: Map,
     of: String,
     default: new Map()
+  },
+  // Media support (Cloudinary-backed)
+  media: {
+    type: {
+      filename: String,
+      mimeType: String,
+      size: Number,
+      // Cloudinary fields (new)
+      url: String,
+      publicId: String,
+      resourceType: String,
+      // Legacy buffer field — kept for backward compatibility with old messages only
+      data: Buffer,
+    }
   },
   // Message delivery/read status
   status: {

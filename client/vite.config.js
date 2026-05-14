@@ -8,10 +8,13 @@ export default defineConfig({
     // ✅ Code splitting for better caching
     rollupOptions: {
       output: {
-        manualChunks: {
-          'livekit': ['@livekit/components-react', 'livekit-client'],
-          'socket': ['socket.io-client'],
-          'vendor': ['react', 'react-dom', 'react-router-dom', 'axios'],
+        manualChunks(id) {
+          if (id.includes('node_modules')) {
+            if (id.includes('@livekit') || id.includes('livekit-client')) return 'livekit';
+            if (id.includes('socket.io-client')) return 'socket';
+            if (id.includes('react') || id.includes('axios')) return 'vendor';
+            return 'vendor-other';
+          }
         }
       }
     },

@@ -1,5 +1,5 @@
 
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useEffect } from 'react';
 import axios from 'axios';
 import { useTranslation } from '../contexts/TranslationContext';
 import socketManager from '../utils/socketManager';
@@ -34,6 +34,18 @@ const ContactList = ({
     const [meetingData, setMeetingData] = useState(null);
     const [meetingLoading, setMeetingLoading] = useState(false);
     const [meetingLinkCopied, setMeetingLinkCopied] = useState(false);
+
+    // Prevent body scroll when modal is open
+    useEffect(() => {
+        if (showMeetingModal) {
+            document.body.style.overflow = 'hidden';
+        } else {
+            document.body.style.overflow = 'unset';
+        }
+        return () => {
+            document.body.style.overflow = 'unset';
+        };
+    }, [showMeetingModal]);
 
     const handleStartMeeting = useCallback(async () => {
         setMeetingLoading(true);
@@ -126,28 +138,40 @@ const ContactList = ({
                                 {t('groups')}
                             </button>
                         </div>
-                        {/* Create group button only shown on Groups tab */}
-                        {showGroups ? (
+                        <div className="flex items-center gap-2">
+                            {/* Mobile: New Meeting button */}
                             <button 
-                                className="w-9 h-9 bg-emerald-600 text-white rounded-full flex items-center justify-center hover:bg-emerald-700 transition-colors shadow-md hover:shadow-lg transform hover:scale-105 active:scale-95"
-                                onClick={createRoom}
-                                title="Create group"
+                                className="lg:hidden w-9 h-9 bg-indigo-600 text-white rounded-full flex items-center justify-center hover:bg-indigo-700 transition-colors shadow-md hover:shadow-lg transform hover:scale-105 active:scale-95"
+                                onClick={() => setShowMeetingModal(true)}
+                                title="New Meeting"
                             >
                                 <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 002 2v8a2 2 0 002 2z" />
                                 </svg>
                             </button>
-                        ) : (
-                            <button 
-                                className="w-9 h-9 bg-blue-600 text-white rounded-full flex items-center justify-center hover:bg-blue-700 transition-colors shadow-md hover:shadow-lg transform hover:scale-105 active:scale-95"
-                                onClick={onAddContact}
-                                title="Add Contact"
-                            >
-                                <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M18 9v3m0 0v3m0-3h3m-3 0h-3m-2-5a4 4 0 11-8 0 4 4 0 018 0zM3 20a6 6 0 0112 0v1H3v-1z" />
-                                </svg>
-                            </button>
-                        )}
+                            {/* Create group button only shown on Groups tab */}
+                            {showGroups ? (
+                                <button 
+                                    className="w-9 h-9 bg-emerald-600 text-white rounded-full flex items-center justify-center hover:bg-emerald-700 transition-colors shadow-md hover:shadow-lg transform hover:scale-105 active:scale-95"
+                                    onClick={createRoom}
+                                    title="Create group"
+                                >
+                                    <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+                                    </svg>
+                                </button>
+                            ) : (
+                                <button 
+                                    className="w-9 h-9 bg-blue-600 text-white rounded-full flex items-center justify-center hover:bg-blue-700 transition-colors shadow-md hover:shadow-lg transform hover:scale-105 active:scale-95"
+                                    onClick={onAddContact}
+                                    title="Add Contact"
+                                >
+                                    <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M18 9v3m0 0v3m0-3h3m-3 0h-3m-2-5a4 4 0 11-8 0 4 4 0 018 0zM3 20a6 6 0 0112 0v1H3v-1z" />
+                                    </svg>
+                                </button>
+                            )}
+                        </div>
                     </div>
                 </div>
 
@@ -289,8 +313,8 @@ const ContactList = ({
                     )}
                 </div>
 
-                {/* Floating "Start Meeting" button */}
-                <div className="p-4 border-t border-gray-100">
+                {/* Floating "Start Meeting" button - desktop only */}
+                <div className="hidden lg:block p-4 border-t border-gray-100">
                     <button
                         onClick={() => setShowMeetingModal(true)}
                         className="w-full flex items-center justify-center gap-2 px-4 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl font-medium text-sm transition-colors shadow-md"
@@ -305,10 +329,10 @@ const ContactList = ({
 
             {/* Instant Meeting Modal */}
             {showMeetingModal && (
-                <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black bg-opacity-60">
-                    <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm overflow-hidden">
+                <div className="fixed inset-0 z-40 flex items-center justify-center p-4 bg-black bg-opacity-40 lg:bg-opacity-60 overflow-hidden">
+                    <div className="bg-white rounded-3xl shadow-2xl w-full sm:max-w-sm max-h-[95vh] overflow-hidden flex flex-col">
                         {/* Header */}
-                        <div className="px-6 py-4 border-b border-gray-100 flex items-center justify-between">
+                        <div className="px-6 py-4 border-b border-gray-100 flex items-center justify-between flex-shrink-0">
                             <div className="flex items-center gap-2">
                                 <div className="w-8 h-8 bg-indigo-100 rounded-full flex items-center justify-center">
                                     <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-indigo-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -317,14 +341,14 @@ const ContactList = ({
                                 </div>
                                 <h2 className="text-base font-semibold text-gray-800">New Meeting</h2>
                             </div>
-                            <button onClick={handleCloseMeetingModal} className="text-gray-400 hover:text-gray-600 transition-colors">
+                            <button onClick={handleCloseMeetingModal} className="text-gray-400 hover:text-gray-600 transition-colors flex-shrink-0">
                                 <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
                                 </svg>
                             </button>
                         </div>
 
-                        <div className="p-6">
+                        <div className="p-6 overflow-y-auto flex-1">
                             {!meetingLink ? (
                                 /* Step 1 — name + create */
                                 <>

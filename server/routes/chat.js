@@ -31,6 +31,7 @@ const authenticate = (req, res, next) => {
 };
 
 router.post('/message', authenticate, MessageController.sendMessage);
+router.get('/media/:messageId', authenticate, MessageController.getMedia);
 
 router.get('/rooms', authenticate, RoomController.getRooms);
 router.post('/rooms', authenticate, RoomController.createRoom);

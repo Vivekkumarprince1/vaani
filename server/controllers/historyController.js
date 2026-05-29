@@ -11,7 +11,9 @@ class HistoryController {
     try {
     await connectDB();
 
-    const { userId, roomId } = req.query;
+    const { userId, roomId, before } = req.query;
+    // Cap page size to protect the server from oversized requests.
+    const limit = Math.min(parseInt(req.query.limit, 10) || 30, 100);
     let query = {};
 
     if (userId) {
@@ -32,21 +34,31 @@ class HistoryController {
       return res.status(400).json({ error: 'userId or roomId required' });
     }
 
-    const messages = await Chat.find(query)
+    // Cursor-based pagination: fetch the page of messages older than `before`.
+    if (before) {
+      const beforeDate = new Date(before);
+      if (!isNaN(beforeDate.getTime())) {
+        query.timestamp = { $lt: beforeDate };
+      }
+    }
+
+    // Fetch newest-first so pagination always returns the most recent page,
+    // request one extra row to detect whether older messages remain, and use
+    // .lean() to skip Mongoose document hydration on the hot read path.
+    const docs = await Chat.find(query)
+      .select('-media.data') // exclude legacy inline buffers; new media is Cloudinary-backed (media.url)
       .populate('sender', 'username preferredLanguage')
       .populate('receiver', 'username preferredLanguage')
-      .sort({ timestamp: 1 });
+      .sort({ timestamp: -1 })
+      .limit(limit + 1)
+      .lean();
 
-    // Convert Buffer to base64 for client transmission
-    const processedMessages = messages.map(msg => {
-      const msgObj = msg.toObject();
-      if (msgObj.media && msgObj.media.data && Buffer.isBuffer(msgObj.media.data)) {
-        msgObj.media.data = msgObj.media.data.toString('base64');
-      }
-      return msgObj;
-    });
+    const hasMore = docs.length > limit;
+    const page = hasMore ? docs.slice(0, limit) : docs;
+    // Client expects chronological (oldest → newest) order.
+    page.reverse();
 
-    return res.json({ messages: processedMessages, hasMore: false });
+    return res.json({ messages: page, hasMore });
   } catch (err) {
     console.error('Get chat history error:', err);
     return res.status(500).json({ error: 'Server error' });

@@ -10,9 +10,10 @@ export default defineConfig({
       output: {
         manualChunks(id) {
           if (id.includes('node_modules')) {
-            if (id.includes('@livekit') || id.includes('livekit-client')) return 'livekit';
-            if (id.includes('socket.io-client')) return 'socket';
-            if (id.includes('react') || id.includes('axios')) return 'vendor';
+            if (id.includes('@livekit') || id.includes('livekit-client')) return 'vendor-livekit';
+            if (id.includes('socket.io-client')) return 'vendor-socket';
+            if (id.includes('react-select') || id.includes('react-icons') || id.includes('@heroicons')) return 'vendor-ui';
+            if (id.includes('react') || id.includes('react-dom') || id.includes('react-router-dom') || id.includes('axios')) return 'vendor-core';
             return 'vendor-other';
           }
         }

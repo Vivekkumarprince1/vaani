@@ -64,6 +64,15 @@ const chatSchema = new mongoose.Schema({
   }
 });
 
+// Indexes for the chat-history read path (historyController.getHistory).
+// The 1:1 query is an $or over both sender/receiver directions, so index both
+// orderings; each branch then resolves via a single indexed range scan on
+// timestamp (which also serves the newest-first sort + `before` cursor).
+chatSchema.index({ sender: 1, receiver: 1, timestamp: -1 });
+chatSchema.index({ receiver: 1, sender: 1, timestamp: -1 });
+// Room (group) history query.
+chatSchema.index({ room: 1, timestamp: -1 });
+
 const Chat = mongoose.models.Chat || mongoose.model('Chat', chatSchema);
 
 module.exports = Chat;

@@ -71,6 +71,8 @@ const toLanguageCode = (locale) => {
 
 // Simple in-memory pool for SpeechTranslationConfig per (key, region, sourceLocale + targets)
 const configPool = new Map();
+const CONFIG_POOL_REFRESH_INTERVAL = 5 * 60 * 1000; // 5 minutes
+
 function getTranslationConfig(sourceLocale, targetLangCodes = []) {
   const { key: SPEECH_KEY, region: SPEECH_REGION } = getSpeechCredentialsOrThrow();
   const key = [SPEECH_KEY, SPEECH_REGION, sourceLocale, targetLangCodes.join(',')].join('|');
@@ -78,13 +80,22 @@ function getTranslationConfig(sourceLocale, targetLangCodes = []) {
   const c = sdk.SpeechTranslationConfig.fromSubscription(SPEECH_KEY, SPEECH_REGION);
   c.speechRecognitionLanguage = sourceLocale;
   targetLangCodes.forEach((t) => c.addTargetLanguage(t));
-  // Conservative timeouts
-  c.setProperty(sdk.PropertyId.SpeechServiceConnection_InitialSilenceTimeoutMs, '3000');
-  c.setProperty(sdk.PropertyId.SpeechServiceConnection_EndSilenceTimeoutMs, '500');
-  c.enableDictation();
+  // Relaxed timeouts for streaming mode (continuous recognition)
+  // InitialSilenceTimeout: wait 8s before giving up on initial audio
+  // EndSilenceTimeout: wait 2s after speech ends before finalizing
+  c.setProperty(sdk.PropertyId.SpeechServiceConnection_InitialSilenceTimeoutMs, '8000');
+  c.setProperty(sdk.PropertyId.SpeechServiceConnection_EndSilenceTimeoutMs, '2000');
+  // DO NOT enable dictation - it's incompatible with streaming translation
+  // c.enableDictation();
   configPool.set(key, c);
   return c;
 }
+
+// Clear stale configs periodically to prevent WebSocket connection issues
+setInterval(() => {
+  console.log('[speechTranslationSDK] Clearing config pool to refresh Azure connections');
+  configPool.clear();
+}, CONFIG_POOL_REFRESH_INTERVAL);
 
 // TTS concurrency limiter (batching)
 const ttsLimit = pLimit(config.TTS_CONCURRENCY || 4);
@@ -148,8 +159,9 @@ const translateSpeechDirect = async (audioBuffer, sourceLanguage, targetLanguage
   const run = async () => {
     // Log audio info for debugging
     const soundDetected = (buf) => {
-      // Skip header and check for non-zero PCM samples
-      for (let i = 44; i < Math.min(buf.length, 1000); i += 2) {
+      // ✅ SAFELY Skip header and check for non-zero PCM samples.
+      // Prevent RangeError crash on odd-sized buffers by checking buf.length - 1.
+      for (let i = 44; i < Math.min(buf.length - 1, 1000); i += 2) {
         if (Math.abs(buf.readInt16LE(i)) > 150) return true;
       }
       return false;
@@ -292,7 +304,9 @@ const translateSpeechToMultipleLanguages = async (audioBuffer, sourceLanguage, t
           const chunkSize = 32768;
           for (let i = 44; i < audioBuffer.length; i += chunkSize) {
             const chunk = audioBuffer.slice(i, Math.min(i + chunkSize, audioBuffer.length));
-            pushStream.write(chunk.buffer.slice(chunk.byteOffset, chunk.byteOffset + chunk.byteLength));
+            // ✅ OPTIMIZED: Write Node Buffer directly. Azure Speech SDK accepts standard Uint8Array/Buffer
+            // without performing slow and redundant ArrayBuffer memory copies (.slice) under the hood.
+            pushStream.write(chunk);
           }
           pushStream.close();
         } catch (err) {
@@ -313,9 +327,10 @@ const translateSpeechToMultipleLanguages = async (audioBuffer, sourceLanguage, t
 
 // Helper function to validate WAV format
 const isValidWavFormat = (buffer) => {
+  // ✅ OPTIMIZED: Use buffer.toString with indices directly to prevent allocating intermediate buffer slices.
   return buffer.length >= 44 &&
-    buffer.slice(0, 4).toString('ascii') === 'RIFF' &&
-    buffer.slice(8, 12).toString('ascii') === 'WAVE';
+    buffer.toString('ascii', 0, 4) === 'RIFF' &&
+    buffer.toString('ascii', 8, 12) === 'WAVE';
 };
 
 module.exports = {

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useContext, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useContext, useRef, useCallback, Suspense } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import axios from 'axios';
 import { AuthContext } from '../contexts/AuthContext';
@@ -15,13 +15,15 @@ import VideoCall from '../components/VideoCall';
 import GroupVideoCall from '../components/GroupVideoCall';
 import Loader from '../components/Loader';
 import SocketStatus from '../components/SocketStatus';
-import CreateGroupModal from '../components/CreateGroupModal';
-import GroupManagementModal from '../components/GroupManagementModal';
-import NotificationSettings from '../components/NotificationSettings';
 import callManager from '../managers/CallManager';
 import signalingService from '../services/SignalingService';
 import mediaTrackManager from '../rtc/MediaTrackManager';
 import { Card, Button, Badge, Modal } from '../components/ui';
+
+// Lazy loaded modals to optimize initial bundle size and initial page load speed
+const CreateGroupModal = React.lazy(() => import('../components/CreateGroupModal'));
+const GroupManagementModal = React.lazy(() => import('../components/GroupManagementModal'));
+const NotificationSettings = React.lazy(() => import('../components/NotificationSettings'));
 
 
 
@@ -1162,7 +1164,7 @@ const Dashboard = () => {
   }, [selectedUser, selectedRoom]);
 
   // Select user
-  const selectUser = (u) => {
+  const selectUser = useCallback((u) => {
     if (inCall || callerRinging || inGroupCall) {
       alert("Please end the current call before switching to another chat.");
       return;
@@ -1181,7 +1183,7 @@ const Dashboard = () => {
     setSelectedUser(u);
     setSelectedRoom(null);
     setShowSidebar(false);
-  };
+  }, [inCall, callerRinging, inGroupCall]);
 
   // Keep ref in sync
   useEffect(() => {
@@ -1189,7 +1191,7 @@ const Dashboard = () => {
   }, [selectedUser]);
 
   // Select room
-  const selectRoom = (room) => {
+  const selectRoom = useCallback((room) => {
     if (inCall || callerRinging || inGroupCall) {
       alert("Please end the current call before switching to another chat.");
       return;
@@ -1213,7 +1215,7 @@ const Dashboard = () => {
     setSelectedRoom(room);
     setSelectedUser(null);
     setShowSidebar(false);
-  };
+  }, [inCall, callerRinging, inGroupCall]);
 
   // Keep ref in sync
   useEffect(() => {
@@ -1225,9 +1227,9 @@ const Dashboard = () => {
   }, [rooms]);
 
   // Create room
-  const createRoom = () => {
+  const createRoom = useCallback(() => {
     setShowCreateGroupModal(true);
-  };
+  }, []);
 
   // Handle group creation
   const handleCreateGroup = async (groupData) => {
@@ -1307,14 +1309,39 @@ const Dashboard = () => {
   };
 
   // Toggle sidebar
-  const toggleSidebar = () => {
-    setShowSidebar(!showSidebar);
-  };
+  // Functional update keeps this callback identity-stable (no showSidebar dep),
+  // so the memoized Header doesn't re-render on unrelated Dashboard updates.
+  const toggleSidebar = useCallback(() => {
+    setShowSidebar((s) => !s);
+  }, []);
 
   // Handle language change
-  const handleLanguageChange = async (language) => {
+  const handleLanguageChange = useCallback(async (language) => {
     return await changeLanguage(language);
-  };
+  }, [changeLanguage]);
+
+  // Stable callbacks for ContactList/Header inline handlers (so React.memo holds).
+  // All only call setState setters (stable) — empty dep arrays are correct.
+  const handleShowNotificationSettings = useCallback(() => {
+    setShowNotificationSettings(true);
+  }, []);
+
+  const handleManageGroup = useCallback((room) => {
+    setManagingRoom(room);
+  }, []);
+
+  const handleOpenAddContactModal = useCallback(() => {
+    setAddContactPhone('');
+    setAddContactStatus('');
+    setShowAddContactModal(true);
+    setShowSidebar(false);
+  }, []);
+
+  const handleInstantMeetingJoin = useCallback((callData) => {
+    setGroupCallData(callData);
+    setInGroupCall(true);
+    setShowSidebar(false);
+  }, []);
 
   // Initialize peer connection
   const createPeerConnection = () => {
@@ -1825,7 +1852,7 @@ const Dashboard = () => {
         user={user}
         toggleSidebar={toggleSidebar}
         handleLanguageChange={handleLanguageChange}
-        onShowNotificationSettings={() => setShowNotificationSettings(true)}
+        onShowNotificationSettings={handleShowNotificationSettings}
       />
 
       {/* Main content - responsive layout */}
@@ -1841,21 +1868,12 @@ const Dashboard = () => {
             selectRoom={selectRoom}
             createRoom={createRoom}
             showSidebar={showSidebar}
-            onManageGroup={(room) => {
-              setManagingRoom(room);
-            }}
+            onManageGroup={handleManageGroup}
             user={user}
-            onAddContact={() => {
-              setAddContactPhone('');
-              setAddContactStatus('');
-              setShowAddContactModal(true);
-            }}
+            onAddContact={handleOpenAddContactModal}
             unreadByContact={unreadByContact}
             unreadByRoom={unreadByRoom}
-            onInstantMeetingJoin={(callData) => {
-              setGroupCallData(callData);
-              setInGroupCall(true);
-            }}
+            onInstantMeetingJoin={handleInstantMeetingJoin}
           />
         </div>
 
@@ -1872,33 +1890,16 @@ const Dashboard = () => {
                 rooms={rooms}
                 selectedUser={selectedUser}
                 selectedRoom={selectedRoom}
-                selectUser={(user) => {
-                  selectUser(user);
-                  setShowSidebar(false);
-                }}
-                selectRoom={(room) => {
-                  selectRoom(room);
-                  setShowSidebar(false);
-                }}
+                selectUser={selectUser}
+                selectRoom={selectRoom}
                 createRoom={createRoom}
                 showSidebar={showSidebar}
-                onManageGroup={(room) => {
-                  setManagingRoom(room);
-                }}
+                onManageGroup={handleManageGroup}
                 user={user}
-                onAddContact={() => {
-                  setAddContactPhone('');
-                  setAddContactStatus('');
-                  setShowAddContactModal(true);
-                  setShowSidebar(false);
-                }}
+                onAddContact={handleOpenAddContactModal}
                 unreadByContact={unreadByContact}
                 unreadByRoom={unreadByRoom}
-                onInstantMeetingJoin={(callData) => {
-                  setGroupCallData(callData);
-                  setInGroupCall(true);
-                  setShowSidebar(false);
-                }}
+                onInstantMeetingJoin={handleInstantMeetingJoin}
               />
             </div>
           </>
@@ -2119,16 +2120,18 @@ const Dashboard = () => {
 
       {/* Modals */}
       {showCreateGroupModal && (
-        <CreateGroupModal
-          isOpen={showCreateGroupModal}
-          onClose={() => setShowCreateGroupModal(false)}
-          users={users}
-          onCreateGroup={(newRoom) => {
-            setShowCreateGroupModal(false);
-            fetchRooms();
-            selectRoom(newRoom);
-          }}
-        />
+        <Suspense fallback={<Loader />}>
+          <CreateGroupModal
+            isOpen={showCreateGroupModal}
+            onClose={() => setShowCreateGroupModal(false)}
+            users={users}
+            onCreateGroup={(newRoom) => {
+              setShowCreateGroupModal(false);
+              fetchRooms();
+              selectRoom(newRoom);
+            }}
+          />
+        </Suspense>
       )}
 
       {showAddContactModal && (
@@ -2178,21 +2181,25 @@ const Dashboard = () => {
       )}
 
       {managingRoom && (
-        <GroupManagementModal
-          room={managingRoom}
-          onClose={() => setManagingRoom(null)}
-          onUpdate={() => {
-            fetchRooms();
-            setManagingRoom(null);
-          }}
-          currentUser={user}
-        />
+        <Suspense fallback={<Loader />}>
+          <GroupManagementModal
+            room={managingRoom}
+            onClose={() => setManagingRoom(null)}
+            onUpdate={() => {
+              fetchRooms();
+              setManagingRoom(null);
+            }}
+            currentUser={user}
+          />
+        </Suspense>
       )}
 
       {showNotificationSettings && (
-        <NotificationSettings
-          onClose={() => setShowNotificationSettings(false)}
-        />
+        <Suspense fallback={<Loader />}>
+          <NotificationSettings
+            onClose={() => setShowNotificationSettings(false)}
+          />
+        </Suspense>
       )}
 
 

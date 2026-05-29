@@ -1,6 +1,15 @@
 const crypto = require('crypto');
 const { getCachedOrSynthesize } = require('../utils/textToSpeechModule');
 const redisManager = require('../redis/RedisManager');
+const pLimitModule = require('p-limit');
+const pLimit = (pLimitModule && pLimitModule.default) ? pLimitModule.default : pLimitModule;
+
+// Single, process-wide TTS concurrency cap shared by BOTH 1:1 and group-call
+// paths (every TTS request flows through getOrSynthesize). Previously each path
+// had its own limiter, so the real concurrent-synthesis count could exceed any
+// single intended cap.
+const TTS_CONCURRENCY = parseInt(process.env.TTS_CONCURRENCY || '4', 10);
+const ttsLimit = pLimit(TTS_CONCURRENCY);
 
 /**
  * SharedTranslationCache
@@ -55,7 +64,7 @@ class SharedTranslationCache {
       return this._inFlight.get(key);
     }
 
-    const promise = getCachedOrSynthesize(text, lang)
+    const promise = ttsLimit(() => getCachedOrSynthesize(text, lang))
       .then(async (buffer) => {
         this._set(key, buffer);
         // Populate Redis so other instances benefit

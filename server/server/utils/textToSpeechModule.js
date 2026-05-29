@@ -95,28 +95,31 @@ const textToSpeech = async (text, targetLanguage, maxRetries = 3) => {
         throw new Error('Azure Speech Service credentials not configured');
       }
 
-      const speechConfig = sdk.SpeechConfig.fromSubscription(SPEECH_KEY, SPEECH_REGION);
-      speechConfig.setServiceProperty('endpoint', SPEECH_ENDPOINT, sdk.ServicePropertyChannel.UriQueryParameter);
-
       const standardizedLanguage = targetLanguage || 'en-US';
-      const voiceName = getVoiceFromLanguage(standardizedLanguage);
-      if (!voiceName) {
-        console.warn(`No voice found for language: ${standardizedLanguage}, falling back to English`);
-        speechConfig.speechSynthesisVoiceName = 'en-US-JennyNeural';
-      } else {
-        speechConfig.speechSynthesisVoiceName = voiceName;
-      }
-      console.log(`🔍 TTS: Using voice: ${speechConfig.speechSynthesisVoiceName}`);
-
-      // Use a faster / lighter audio format for lower latency and smaller payloads.
-      // Default to 24kHz @ 48Kbit/s mono MP3 which is a good balance of speed and quality.
-      // Optionally override with AUDIO_FORMAT env var: '16k-32k' for Audio16Khz32KBitRateMonoMp3
+      const voiceName = getVoiceFromLanguage(standardizedLanguage) || 'en-US-JennyNeural';
       const preferredFormat = process.env.AZURE_TTS_AUDIO_FORMAT || '24k-48k';
-      if (preferredFormat === '16k-32k') {
-        speechConfig.speechSynthesisOutputFormat = sdk.SpeechSynthesisOutputFormat.Audio16Khz32KBitRateMonoMp3;
-      } else {
-        speechConfig.speechSynthesisOutputFormat = sdk.SpeechSynthesisOutputFormat.Audio24Khz48KBitRateMonoMp3;
+
+      // ✅ OPTIMIZED: Reuse SpeechConfig instances via an in-memory pool to eliminate instantiation overhead and connection setups
+      if (!global.__ttsConfigPool) {
+        global.__ttsConfigPool = new Map();
       }
+      const poolKey = `${SPEECH_KEY}|${SPEECH_REGION}|${SPEECH_ENDPOINT}|${voiceName}|${preferredFormat}`;
+      let speechConfig = global.__ttsConfigPool.get(poolKey);
+
+      if (!speechConfig) {
+        speechConfig = sdk.SpeechConfig.fromSubscription(SPEECH_KEY, SPEECH_REGION);
+        speechConfig.setServiceProperty('endpoint', SPEECH_ENDPOINT, sdk.ServicePropertyChannel.UriQueryParameter);
+        speechConfig.speechSynthesisVoiceName = voiceName;
+
+        if (preferredFormat === '16k-32k') {
+          speechConfig.speechSynthesisOutputFormat = sdk.SpeechSynthesisOutputFormat.Audio16Khz32KBitRateMonoMp3;
+        } else {
+          speechConfig.speechSynthesisOutputFormat = sdk.SpeechSynthesisOutputFormat.Audio24Khz48KBitRateMonoMp3;
+        }
+        global.__ttsConfigPool.set(poolKey, speechConfig);
+      }
+
+      console.log(`🔍 TTS: Using voice: ${voiceName}`);
 
       // Use null audio config to receive audio in-memory via result.audioData
       const synthesizer = new sdk.SpeechSynthesizer(speechConfig, null);

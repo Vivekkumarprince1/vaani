@@ -427,4 +427,8 @@ const ContactList = ({
     );
 };
 
-export default ContactList;
+// Memoized: ContactList renders the full contact/room sidebar and is expensive.
+// Dashboard re-renders frequently (caption/call/typing state); memo keeps the
+// sidebar from re-rendering unless its own props actually change. Note: this
+// only pays off once the callbacks Dashboard passes are stabilized (useCallback).
+export default React.memo(ContactList);

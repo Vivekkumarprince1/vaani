@@ -65,10 +65,16 @@ const useGroupCallAudioProcessing = (
         await audioContextRef.current.audioWorklet.addModule('/worklets/VaaniProcessor.js');
         workletNodeRef.current = new AudioWorkletNode(audioContextRef.current, 'vaani-processor');
 
-        let audioBuffer = [];
+        // Accumulate captured PCM as a list of Float32Array chunks and flatten
+        // once at flush. Avoids spreading (`push(...Array.from(chunk))`) tens of
+        // thousands of args per utterance, which thrashes GC and can throw
+        // RangeError (call-stack overflow) on long utterances.
+        let audioChunks = [];
+        let bufferedSamples = 0;
         let silenceCounter = 0;
-        const SILENCE_THRESHOLD = 10; // ~10 callbacks ≈ 460ms
-        const MIN_SAMPLES = audioContextRef.current.sampleRate * 0.5; // 0.5 s
+        // ✅ OPTIMIZED: Reduce SILENCE_THRESHOLD to 4 callbacks (~180ms of silence) to minimize lag after user finishes speaking
+        const SILENCE_THRESHOLD = 4;
+        const MIN_SAMPLES = audioContextRef.current.sampleRate * 0.3; // 0.3 s (optimized min utterance duration)
 
         const hasSound = (data) => data.some((s) => Math.abs(s) > 0.005);
 
@@ -80,13 +86,21 @@ const useGroupCallAudioProcessing = (
           const chunkHasSound = hasSound(pcmChunk);
 
           if (chunkHasSound) {
-            audioBuffer.push(...Array.from(pcmChunk));
+            // Copy the chunk — the worklet may reuse/transfer the underlying buffer.
+            audioChunks.push(pcmChunk.slice());
+            bufferedSamples += pcmChunk.length;
             silenceCounter = 0;
-          } else if (audioBuffer.length > 0) {
+          } else if (bufferedSamples > 0) {
             silenceCounter++;
-            if (silenceCounter >= SILENCE_THRESHOLD && audioBuffer.length >= MIN_SAMPLES) {
-              const chunk = Float32Array.from(audioBuffer);
-              audioBuffer = [];
+            if (silenceCounter >= SILENCE_THRESHOLD && bufferedSamples >= MIN_SAMPLES) {
+              const chunk = new Float32Array(bufferedSamples);
+              let offset = 0;
+              for (const c of audioChunks) {
+                chunk.set(c, offset);
+                offset += c.length;
+              }
+              audioChunks = [];
+              bufferedSamples = 0;
               silenceCounter = 0;
               _sendAudioForRecognition(chunk);
             }
@@ -115,8 +129,9 @@ const useGroupCallAudioProcessing = (
 
     let audioBuffer = new Float32Array();
     let silenceCounter = 0;
-    const SILENCE_THRESHOLD = 10;
-    const MIN_SAMPLES = ctx.sampleRate * 0.5;
+    // ✅ OPTIMIZED: Reduce SILENCE_THRESHOLD to 4 callbacks (~180ms of silence) to minimize lag after user finishes speaking
+    const SILENCE_THRESHOLD = 4;
+    const MIN_SAMPLES = ctx.sampleRate * 0.3; // 0.3 s (optimized min utterance duration)
 
     const hasSound = (data) => data.some((s) => Math.abs(s) > 0.005);
 

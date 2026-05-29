@@ -257,4 +257,7 @@ const Header = ({ user, toggleSidebar, handleLanguageChange, onShowNotificationS
     );
 };
 
-export default Header;
+// Memoized: Header sits above the chat/call state in Dashboard and only depends
+// on `user` + a few stable callbacks. Without memo it re-renders on every
+// Dashboard state change (including high-frequency caption updates during calls).
+export default React.memo(Header);

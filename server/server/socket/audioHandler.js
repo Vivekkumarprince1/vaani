@@ -10,6 +10,29 @@ const { translateSpeechDirect, toSpeechLocale, toLanguageCode, getTranslationCon
 const { getCachedOrSynthesize } = require('../utils/textToSpeechModule');
 const serverMetrics = require('../utils/performanceMetrics');
 const sdk = require('microsoft-cognitiveservices-speech-sdk');
+const audioQueueManager = require('../queue/audioQueueManager');
+const redisManager = require('../redis/RedisManager');
+
+/**
+ * Resolve a receiver's online status + preferred language.
+ * Local in-memory maps are the fast path; Redis is the cross-instance fallback
+ * so translation works when sender and receiver are on different instances.
+ * Delivery itself uses `io.to('user_<userId>')`, which the Redis adapter routes
+ * to whichever instance owns the receiver's socket(s).
+ */
+async function resolveReceiver(userId, users, userIdToSocketId) {
+  const localSid = userIdToSocketId[userId];
+  if (localSid && users[localSid]) {
+    return { online: true, preferredLanguage: users[localSid].preferredLanguage || 'en' };
+  }
+  try {
+    const r = await redisManager.getUser(userId);
+    if (r) return { online: true, preferredLanguage: r.preferredLanguage || 'en' };
+  } catch (e) {
+    // Redis unavailable — fall through to offline.
+  }
+  return { online: false, preferredLanguage: 'en' };
+}
 
 const handleAudioTranslation = (io, socket, users, userIdToSocketId) => {
   socket.on('audioSystemReady', (data) => {
@@ -34,18 +57,17 @@ const handleAudioTranslation = (io, socket, users, userIdToSocketId) => {
         return;
       }
       
-      // Find receiver's socket ID
-      const receiverSocketId = userIdToSocketId[userId];
-      
-      if (!receiverSocketId) {
+      // Verify the receiver is online (local or another instance via Redis)
+      const receiver = await resolveReceiver(userId, users, userIdToSocketId);
+      if (!receiver.online) {
         console.error('Receiver not found or not online:', userId);
-        socket.emit('error', { 
+        socket.emit('error', {
           message: 'Receiver not found or not online',
           requestId
         });
         return;
       }
-      
+
       // Convert base64 to buffer
       let audioBuffer;
       try {
@@ -59,8 +81,8 @@ const handleAudioTranslation = (io, socket, users, userIdToSocketId) => {
         return;
       }
       
-      // Recognize speech (voice-to-text only)
-      const recognizedText = await recognizeSpeech(audioBuffer, sourceLanguage);
+      // Recognize speech (voice-to-text only) via AudioQueueManager
+      const recognizedText = await audioQueueManager.addRecognitionJob(audioBuffer, sourceLanguage);
       
       if (!recognizedText || !recognizedText.trim()) {
         console.log('No speech detected or empty transcription');
@@ -93,21 +115,19 @@ const handleAudioTranslation = (io, socket, users, userIdToSocketId) => {
       console.log(`   🌐 ${sourceLanguage} → ${targetLanguage}`);
       console.log(`   🆔 Request: ${requestId || 'none'}`);
       
-      // Find receiver's socket ID
-      const receiverSocketId = userIdToSocketId[userId];
-      
-      if (!receiverSocketId) {
+      // Resolve receiver online status + preferred language (cross-instance aware)
+      const receiver = await resolveReceiver(userId, users, userIdToSocketId);
+      if (!receiver.online) {
         console.error('Receiver not found or not online:', userId);
-        socket.emit('error', { 
+        socket.emit('error', {
           message: 'Receiver not found or not online',
           requestId
         });
         return;
       }
-      
+
       // Get receiver's preferred language
-      const receiverData = users[receiverSocketId];
-      targetLanguage = receiverData.preferredLanguage || targetLanguage || 'en';
+      targetLanguage = receiver.preferredLanguage || targetLanguage || 'en';
       
       console.log(`[audioHandler] Target language set to receiver's preference: ${targetLanguage}`);
       
@@ -121,8 +141,8 @@ const handleAudioTranslation = (io, socket, users, userIdToSocketId) => {
         return;
       }
       
-      // Translate text
-      const translatedText = await translateText(text, sourceLanguage, targetLanguage);
+      // Translate text via AudioQueueManager
+      const translatedText = await audioQueueManager.addTranslationJob(text, sourceLanguage, targetLanguage);
       
       if (!translatedText) {
         console.log('Translation failed or empty result');
@@ -227,8 +247,8 @@ const handleAudioTranslation = (io, socket, users, userIdToSocketId) => {
         return;
       }
 
-      const receiverSocketId = userIdToSocketId[userId];
-      if (!receiverSocketId) {
+      const receiver = await resolveReceiver(userId, users, userIdToSocketId);
+      if (!receiver.online) {
         console.error('Receiver not found:', userId);
         socket.emit('error', { message: 'Receiver not found', requestId });
         return;
@@ -243,8 +263,7 @@ const handleAudioTranslation = (io, socket, users, userIdToSocketId) => {
         return;
       }
 
-      const receiverData = users[receiverSocketId];
-      const finalTargetLanguage = receiverData.preferredLanguage || targetLanguage || 'en';
+      const finalTargetLanguage = receiver.preferredLanguage || targetLanguage || 'en';
       console.log(`[audioHandler] Target language set to receiver's preference: ${finalTargetLanguage}`);
 
       // Partial callback to stream transcripts back
@@ -271,7 +290,7 @@ const handleAudioTranslation = (io, socket, users, userIdToSocketId) => {
       };
 
       const translateStart = Date.now();
-      const result = await translateSpeechDirect(audioBuffer, sourceLanguage, finalTargetLanguage, handlePartial);
+      const result = await audioQueueManager.addSpeechTranslationJob(audioBuffer, sourceLanguage, finalTargetLanguage, handlePartial);
       const translateTime = Date.now() - translateStart;
 
       if (result.error || !result.translated) {
@@ -280,10 +299,10 @@ const handleAudioTranslation = (io, socket, users, userIdToSocketId) => {
         return;
       }
 
-      // Synthesize translated text into audio (voice-to-voice)
+      // Synthesize translated text into audio (voice-to-voice) via AudioQueueManager
       let ttsBuffer = null;
       try {
-        ttsBuffer = await getCachedOrSynthesize(result.translated, finalTargetLanguage);
+        ttsBuffer = await audioQueueManager.addTtsJob(result.translated, finalTargetLanguage);
       } catch (ttsErr) {
         console.error('Text-to-speech (cached) failed:', ttsErr);
         // Fall back to sending only transcripts
@@ -303,9 +322,9 @@ const handleAudioTranslation = (io, socket, users, userIdToSocketId) => {
       // Send to sender (local)
       socket.emit('translatedSpeech', finalResponseData);
 
-      // Send to receiver (remote)
+      // Send to receiver (remote) — room emit routes across instances via the adapter
       finalResponseData.isLocal = false;
-      io.to(receiverSocketId).emit('translatedSpeech', finalResponseData);
+      io.to(`user_${userId}`).emit('translatedSpeech', finalResponseData);
 
       console.log(`[audioHandler] Voice-to-voice complete: "${result.original}" -> "${result.translated}" (${translateTime}ms)`);
     } catch (error) {
@@ -322,9 +341,6 @@ const handleAudioTranslation = (io, socket, users, userIdToSocketId) => {
     
     try {
       const { audio, sourceLanguage, targetLanguage, userId, requestId, timestamp } = data;
-      // console.log('\n🚀 [OPTIMIZED SPEECH TRANSLATION] Single API Call');
-      // console.log(`   🌐 ${sourceLanguage} → ${targetLanguage}`);
-      // console.log(`   🆔 Request: ${requestId || 'none'}`);
       
       if (timestamp) {
         const clientLatency = startTime - timestamp;
@@ -340,9 +356,9 @@ const handleAudioTranslation = (io, socket, users, userIdToSocketId) => {
         return;
       }
       
-      const receiverSocketId = userIdToSocketId[userId];
-      
-      if (!receiverSocketId) {
+      const receiver = await resolveReceiver(userId, users, userIdToSocketId);
+
+      if (!receiver.online) {
         console.error('Receiver not found:', userId);
         socket.emit('error', {
           message: 'Receiver not found',
@@ -350,7 +366,7 @@ const handleAudioTranslation = (io, socket, users, userIdToSocketId) => {
         });
         return;
       }
-      
+
       let audioBuffer;
       try {
         if (Buffer.isBuffer(audio) || audio instanceof Uint8Array) {
@@ -367,12 +383,11 @@ const handleAudioTranslation = (io, socket, users, userIdToSocketId) => {
         return;
       }
       
-      const receiverData = users[receiverSocketId];
-      const finalTargetLanguage = receiverData.preferredLanguage || targetLanguage || 'en';
-      
+      const finalTargetLanguage = receiver.preferredLanguage || targetLanguage || 'en';
+
       console.log(`🎙️  Translation Request: ${sourceLanguage} -> ${finalTargetLanguage} (for user ${userId})`);
       
-      // ✅ OPTIMIZED: Single API call for speech translation
+      // ✅ OPTIMIZED: Single API call for speech translation via AudioQueueManager
       const translationStartTime = Date.now();
       
       // Callback for partial results
@@ -407,7 +422,7 @@ const handleAudioTranslation = (io, socket, users, userIdToSocketId) => {
       serverMetrics.recordTimestamp(serverMetric, 'serverReceived');
       serverMetrics.recordTimestamp(serverMetric, 'translationStart');
 
-      const result = await translateSpeechDirect(
+      const result = await audioQueueManager.addSpeechTranslationJob(
         audioBuffer,
         sourceLanguage,
         finalTargetLanguage,
@@ -442,17 +457,10 @@ const handleAudioTranslation = (io, socket, users, userIdToSocketId) => {
       }
       
       console.log(`[audioHandler] Complete: "${result.original}" -> "${result.translated}" (${translationTime}ms)`);
-      
-  // Generate TTS audio for the translated text
-          let ttsBuffer = null;
-      try {
-        ttsBuffer = await getCachedOrSynthesize(result.translated, finalTargetLanguage);
-      } catch (ttsErr) {
-        console.error('Text-to-speech failed:', ttsErr);
-      }
-      
-      // Phase 1: Send text immediately so both parties can display subtitles
-      // without waiting for TTS synthesis.
+
+      // Phase 1: Send text IMMEDIATELY so both parties can display subtitles
+      // without waiting for TTS synthesis. TTS is generated afterwards (below)
+      // so it never blocks caption delivery.
       serverMetrics.recordTimestamp(serverMetric, 'clientReceived');
 
       const textOnlyPayload = {
@@ -469,9 +477,17 @@ const handleAudioTranslation = (io, socket, users, userIdToSocketId) => {
 
       socket.emit('translatedSpeech', textOnlyPayload);
       textOnlyPayload.isLocal = false;
-      io.to(receiverSocketId).emit('translatedSpeech', textOnlyPayload);
+      io.to(`user_${userId}`).emit('translatedSpeech', textOnlyPayload);
 
-      // Phase 2: Send TTS audio once ready (non-blocking — client already has text)
+      // Phase 2: Generate TTS audio AFTER text is already on the wire, then
+      // send it as a separate audio-only event (non-blocking for captions).
+      let ttsBuffer = null;
+      try {
+        ttsBuffer = await audioQueueManager.addTtsJob(result.translated, finalTargetLanguage);
+      } catch (ttsErr) {
+        console.error('Text-to-speech failed:', ttsErr);
+      }
+
       if (ttsBuffer) {
         const audioPayload = {
           text: null,
@@ -485,7 +501,7 @@ const handleAudioTranslation = (io, socket, users, userIdToSocketId) => {
         };
         socket.emit('translatedSpeech', audioPayload);
         audioPayload.isLocal = false;
-        io.to(receiverSocketId).emit('translatedSpeech', audioPayload);
+        io.to(`user_${userId}`).emit('translatedSpeech', audioPayload);
       }
 
       serverMetrics.recordTimestamp(serverMetric, 'displayed');
@@ -493,7 +509,6 @@ const handleAudioTranslation = (io, socket, users, userIdToSocketId) => {
 
       const totalTime = Date.now() - startTime;
       console.log(`Optimized pipeline: ${totalTime}ms (translation: ${translationTime}ms)`);
-      // console.log(`   💡 Estimated savings: ~200-300ms vs separate STT+Translation`);
     } catch (error) {
       console.error('Error in optimized speech translation:', error);
       socket.emit('error', {
@@ -512,15 +527,14 @@ const handleAudioTranslation = (io, socket, users, userIdToSocketId) => {
     const { sourceLanguage, targetLanguage, userId, requestId } = data;
     console.log(`🚀 [STREAM] Starting translation stream: ${sourceLanguage} -> ${targetLanguage} (User: ${userId})`);
 
-    const receiverSocketId = userIdToSocketId[userId];
-    if (!receiverSocketId) {
+    const receiver = await resolveReceiver(userId, users, userIdToSocketId);
+    if (!receiver.online) {
       console.error('Receiver not found:', userId);
       socket.emit('error', { message: 'Receiver not found', requestId });
       return;
     }
 
-    const receiverData = users[receiverSocketId];
-    const finalTargetLanguage = receiverData.preferredLanguage || targetLanguage || 'en';
+    const finalTargetLanguage = receiver.preferredLanguage || targetLanguage || 'en';
 
     const sourceLocale = toSpeechLocale(sourceLanguage);
     const targetCode = toLanguageCode(finalTargetLanguage);
@@ -537,7 +551,7 @@ const handleAudioTranslation = (io, socket, users, userIdToSocketId) => {
       recognizer,
       pushStream,
       targetCode,
-      receiverSocketId,
+      receiverUserId: userId,
       requestId,
       finalTargetLanguage
     };
@@ -549,11 +563,14 @@ const handleAudioTranslation = (io, socket, users, userIdToSocketId) => {
             original: e.result.text,
             translated: e.result.translations.get(targetCode) || ''
           },
-          isLocal: true,
           partial: true,
           requestId
         };
-        socket.emit('translatedSpeech', partial);
+        // Live partials to BOTH sides so captions update in real time as the
+        // speaker talks (previously only the sender saw partials, so the
+        // listener waited for the full final segment + TTS before seeing text).
+        socket.emit('translatedSpeech', { ...partial, isLocal: true });
+        io.to(`user_${userId}`).emit('translatedSpeech', { ...partial, isLocal: false });
       }
     };
 
@@ -561,12 +578,25 @@ const handleAudioTranslation = (io, socket, users, userIdToSocketId) => {
       if (e.result.reason === sdk.ResultReason.TranslatedSpeech) {
         const original = e.result.text;
         const translated = e.result.translations.get(targetCode) || '';
-        
+
         if (!original) return;
 
         console.log(`🎯 [STREAM] Recognized: "${original}" -> "${translated}"`);
 
-        // Generate TTS for the final recognized segment
+        // Phase 1: send FINAL text immediately (no TTS wait) so captions lock in
+        // on both sides right away.
+        const textData = {
+          text: { original, translated },
+          audio: null,
+          partial: false,
+          audiocoming: true, // hint: audio will arrive in a follow-up event
+          requestId,
+          timestamp: Date.now()
+        };
+        socket.emit('translatedSpeech', { ...textData, isLocal: true });
+        io.to(`user_${userId}`).emit('translatedSpeech', { ...textData, isLocal: false });
+
+        // Phase 2: synthesize TTS AFTER text is on the wire, then send audio-only.
         let ttsBuffer = null;
         try {
           ttsBuffer = await getCachedOrSynthesize(translated, finalTargetLanguage);
@@ -574,21 +604,18 @@ const handleAudioTranslation = (io, socket, users, userIdToSocketId) => {
           console.error('TTS failed in stream:', err);
         }
 
-        const finalData = {
-          text: { original, translated },
-          audio: ttsBuffer,
-          isLocal: true,
-          partial: false,
-          requestId,
-          timestamp: Date.now()
-        };
-
-        // Send to sender
-        socket.emit('translatedSpeech', finalData);
-
-        // Send to receiver
-        finalData.isLocal = false;
-        io.to(receiverSocketId).emit('translatedSpeech', finalData);
+        if (ttsBuffer) {
+          const audioData = {
+            text: null,
+            audio: ttsBuffer,
+            partial: false,
+            audioonly: true,
+            requestId,
+            timestamp: Date.now()
+          };
+          socket.emit('translatedSpeech', { ...audioData, isLocal: true });
+          io.to(`user_${userId}`).emit('translatedSpeech', { ...audioData, isLocal: false });
+        }
       }
     };
 
@@ -596,6 +623,22 @@ const handleAudioTranslation = (io, socket, users, userIdToSocketId) => {
       console.warn(`⚠️ [STREAM] Canceled: ${e.reason}`);
       if (e.reason === sdk.CancellationReason.Error) {
         console.error(`Error details: ${e.errorDetails}`);
+        // Notify client of translation stream error
+        socket.emit('translationStreamError', { 
+          message: e.errorDetails || 'Azure Speech Service connection failed',
+          reason: e.reason,
+          requestId: socket.translationStream?.requestId
+        });
+        // Clean up on error
+        if (socket.translationStream) {
+          try {
+            pushStream.close();
+            recognizer.close();
+          } catch (cleanupErr) {
+            console.error('Error during cleanup:', cleanupErr);
+          }
+          socket.translationStream = null;
+        }
       }
     };
 
@@ -605,7 +648,23 @@ const handleAudioTranslation = (io, socket, users, userIdToSocketId) => {
 
     recognizer.startContinuousRecognitionAsync(
       () => console.log('✅ [STREAM] Continuous recognition started'),
-      (err) => console.error('❌ [STREAM] Failed to start recognition:', err)
+      (err) => {
+        console.error('❌ [STREAM] Failed to start recognition:', err);
+        // Notify client of startup failure
+        socket.emit('translationStreamError', { 
+          message: 'Failed to start translation stream',
+          error: err?.message || String(err),
+          requestId: data.requestId
+        });
+        // Clean up on startup failure
+        try {
+          pushStream.close();
+          recognizer.close();
+        } catch (cleanupErr) {
+          console.error('Error during cleanup:', cleanupErr);
+        }
+        socket.translationStream = null;
+      }
     );
   });
 

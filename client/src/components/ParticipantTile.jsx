@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, memo } from 'react';
 import { Track } from 'livekit-client';
 
 const ParticipantTile = ({ participant, isLocal = false, isActiveSpeaker = false, preferredLanguage = 'en' }) => {
@@ -128,4 +128,13 @@ const ParticipantTile = ({ participant, isLocal = false, isActiveSpeaker = false
   );
 };
 
-export default ParticipantTile;
+export default memo(ParticipantTile, (prevProps, nextProps) => {
+  return (
+    prevProps.isLocal === nextProps.isLocal &&
+    prevProps.isActiveSpeaker === nextProps.isActiveSpeaker &&
+    prevProps.preferredLanguage === nextProps.preferredLanguage &&
+    prevProps.participant?.identity === nextProps.participant?.identity &&
+    prevProps.participant?.isCameraEnabled === nextProps.participant?.isCameraEnabled &&
+    prevProps.participant?.isMicrophoneEnabled === nextProps.participant?.isMicrophoneEnabled
+  );
+});

@@ -5,6 +5,7 @@ const Chat = require('../../lib/models/Chat');
 const Room = require('../../lib/models/Room');
 const participantManager = require('../sfu/ParticipantManager');
 const workerManager = require('../sfu/TranslationWorkerManager');
+const redisManager = require('../redis/RedisManager');
 
 const pendingCalls = new Map(); // Store pending private calls for reconnection
 
@@ -46,6 +47,16 @@ module.exports = (io, users, rooms, findUserByUserId, userIdToSocketId) => {
       preferredLanguage: preferredLanguage
     };
     userIdToSocketId[userId] = socket.id;
+
+    // Mirror presence to Redis so other server instances can resolve this user's
+    // online status + preferredLanguage (the in-memory maps above are local-only).
+    // Fire-and-forget: presence is best-effort and must never block connect.
+    redisManager.setUser(userId, {
+      socketId: socket.id,
+      username: finalUsername,
+      preferredLanguage,
+      status: 'online',
+    }).catch(() => {});
 
     // Join a private room for this user to receive direct notifications regardless of active chat room
     socket.join(`user_${userId}`);
@@ -92,6 +103,15 @@ module.exports = (io, users, rooms, findUserByUserId, userIdToSocketId) => {
       const { language } = data;
       if (language && users[socket.id]) {
         users[socket.id].preferredLanguage = language;
+
+        // Keep Redis presence in sync so cross-instance translation targets the
+        // updated language immediately.
+        redisManager.setUser(userId, {
+          socketId: socket.id,
+          username: users[socket.id].username,
+          preferredLanguage: language,
+          status: 'online',
+        }).catch(() => {});
 
         // Keep ParticipantManager in sync for any active group call
         const callRoomId = participantManager.findRoomForUser(String(userId));
@@ -161,18 +181,13 @@ module.exports = (io, users, rooms, findUserByUserId, userIdToSocketId) => {
 
         if (updated) {
           const senderId = (updated.sender || '').toString();
-          const ioInstance = global.__io;
-          if (ioInstance && senderId) {
-            const sockets = Array.from(ioInstance.of('/').sockets.values());
-            sockets.forEach(s => {
-              if (s.user && (s.user.userId === senderId || s.user.userId === senderId.toString())) {
-                console.log(`📨 Emitting messageStatusUpdate to sender (${senderId}): messageId=${messageId}, status=delivered`);
-                ioInstance.to(s.id).emit('messageStatusUpdate', {
-                  messageId: updated._id,
-                  status: 'delivered',
-                  clientTempId: clientTempId || null
-                });
-              }
+          // Emit to the sender's private room. The Socket.IO Redis adapter routes
+          // this across instances, and it's O(1) instead of scanning every socket.
+          if (senderId) {
+            io.to(`user_${senderId}`).emit('messageStatusUpdate', {
+              messageId: updated._id,
+              status: 'delivered',
+              clientTempId: clientTempId || null
             });
           }
         }
@@ -189,34 +204,26 @@ module.exports = (io, users, rooms, findUserByUserId, userIdToSocketId) => {
       console.log(`👁️ messageSeen received for ${messageIds.length} messages from user ${userId}`);
 
       try {
-        const ioInstance = global.__io;
+        // Bulk-update all seen messages in one round-trip instead of N updates.
+        const ids = messageIds.filter(Boolean);
+        await Chat.updateMany(
+          { _id: { $in: ids }, status: { $ne: 'seen' } },
+          { $set: { status: 'seen', seenAt: new Date() } }
+        );
 
-        for (const mid of messageIds) {
-          try {
-            const updated = await Chat.findByIdAndUpdate(mid, {
-              status: 'seen',
-              seenAt: new Date()
-            }, { new: true });
+        // Fetch (sender, _id) pairs so we can notify each sender.
+        const docs = await Chat.find({ _id: { $in: ids } })
+          .select('_id sender')
+          .lean();
 
-            if (updated) {
-              const senderId = (updated.sender || '').toString();
-              console.log(`📕 Message ${mid} marked as seen, notifying sender (${senderId})`);
-
-              if (ioInstance && senderId) {
-                const sockets = Array.from(ioInstance.of('/').sockets.values());
-                sockets.forEach(s => {
-                  if (s.user && (s.user.userId === senderId || s.user.userId === senderId.toString())) {
-                    console.log(`   ✅ Emitting messageStatusUpdate (seen) to sender socket ${s.id}`);
-                    ioInstance.to(s.id).emit('messageStatusUpdate', {
-                      messageId: updated._id,
-                      status: 'seen'
-                    });
-                  }
-                });
-              }
-            }
-          } catch (innerErr) {
-            console.error('Failed to update seen for message', mid, innerErr);
+        for (const doc of docs) {
+          const senderId = (doc.sender || '').toString();
+          // Notify the sender's private room (cross-instance via Redis adapter, O(1)).
+          if (senderId) {
+            io.to(`user_${senderId}`).emit('messageStatusUpdate', {
+              messageId: doc._id,
+              status: 'seen'
+            });
           }
         }
       } catch (err) {
@@ -506,8 +513,12 @@ module.exports = (io, users, rooms, findUserByUserId, userIdToSocketId) => {
           status: 'offline'
         });
 
-        // Remove from memory
+        // Remove from memory + Redis presence
         delete users[socket.id];
+        if (userIdToSocketId[userId] === socket.id) {
+          delete userIdToSocketId[userId];
+          redisManager.deleteUser(userId).catch(() => {});
+        }
       }
     });
 
@@ -577,9 +588,10 @@ module.exports = (io, users, rooms, findUserByUserId, userIdToSocketId) => {
           }
         });
 
-        // Clean up from memory immediately
+        // Clean up from memory + Redis presence immediately
         if (userIdToSocketId[userId] === socket.id) {
           delete userIdToSocketId[userId];
+          redisManager.deleteUser(userId).catch(() => {});
         }
         delete users[socket.id];
       }

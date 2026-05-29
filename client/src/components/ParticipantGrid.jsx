@@ -1,3 +1,4 @@
+import { memo } from 'react';
 import ParticipantTile from './ParticipantTile';
 
 /**
@@ -47,4 +48,4 @@ const ParticipantGrid = ({
   );
 };
 
-export default ParticipantGrid;
+export default memo(ParticipantGrid);

@@ -131,6 +131,33 @@ const useLiveKitRoom = (callRoomId, options = {}) => {
       r.off(RoomEvent.LocalTrackUnpublished, onLocalTrackChanged);
       r.off(RoomEvent.TrackMuted, onParticipantChanged);
       r.off(RoomEvent.TrackUnmuted, onParticipantChanged);
+
+      // Clean up local tracks (stop and detach)
+      if (r.localParticipant) {
+        r.localParticipant.audioTracks?.forEach(pub => {
+          if (pub.track) {
+            pub.track.detach();
+            pub.track.stop();
+          }
+        });
+        r.localParticipant.videoTracks?.forEach(pub => {
+          if (pub.track) {
+            pub.track.detach();
+            pub.track.stop();
+          }
+        });
+      }
+
+      // Clean up remote tracks (stop and detach)
+      r.remoteParticipants.forEach(participant => {
+        participant.trackPublications?.forEach(pub => {
+          if (pub.track) {
+            pub.track.detach();
+            pub.track.stop();
+          }
+        });
+      });
+
       r.disconnect();
       roomRef.current = null;
       setRoom(null);

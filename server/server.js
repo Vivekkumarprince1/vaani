@@ -1,4 +1,16 @@
 
+// ── Azure Speech SDK websocket compatibility shim ──────────────────────────
+// Node 18/20+ expose an experimental global `WebSocket` (WebSocket-over-HTTP/2).
+// The microsoft-cognitiveservices-speech-sdk picks it up automatically, but its
+// HTTP/2 upgrade fails against Azure Speech's wss endpoints — the socket closes
+// with `StatusCode: 1006 — Unable to contact server`, so speech recognition /
+// translation silently never connects (REST/token calls are unaffected).
+// Removing the global forces the SDK to fall back to the reliable `ws` package.
+// Must run BEFORE the SDK is required (transitively via the socket handlers below).
+if (typeof globalThis.WebSocket !== 'undefined') {
+  delete globalThis.WebSocket;
+}
+
 const express = require('express');
 const { createServer } = require('http');
 const { Server } = require('socket.io');

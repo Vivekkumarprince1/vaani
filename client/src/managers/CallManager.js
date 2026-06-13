@@ -17,12 +17,28 @@ class CallManager {
     this.onRemoteTrack = null;
     this.onConnectionStateChange = null;
     this.onTranslatedSpeech = null;
+    this.onTranslationStatus = null;
+    this.onTranslationLatencyMetric = null;
+    this.onTranslationPlaybackStateChange = null;
+    this.translationStreamReady = false;
+    this.isMuted = false;
+    this.activeTargetUserId = null;
+    this.activeStreamRequestId = null;
+    this.seenTranslationPayloads = new Set();
+    this.translationHandlers = null;
   }
 
   initialize(callbacks = {}) {
     this.onRemoteTrack = callbacks.onRemoteTrack;
     this.onConnectionStateChange = callbacks.onConnectionStateChange;
     this.onTranslatedSpeech = callbacks.onTranslatedSpeech;
+    this.onTranslationStatus = callbacks.onTranslationStatus;
+    this.onTranslationLatencyMetric = callbacks.onTranslationLatencyMetric;
+    this.onTranslationPlaybackStateChange = callbacks.onTranslationPlaybackStateChange;
+
+    translationAudioService.setPlaybackStateCallback((isPlaying) => {
+      this.onTranslationPlaybackStateChange?.(isPlaying);
+    });
 
     signalingService.initialize();
     this.setupSignalingListeners();
@@ -46,7 +62,7 @@ class CallManager {
       this.onConnectionStateChange
     );
 
-    const pc = this.pcManager.createPeerConnection();
+    this.pcManager.createPeerConnection();
     mediaTrackManager.setLocalStream(localStream);
 
     // Add local tracks to PC
@@ -142,41 +158,109 @@ class CallManager {
 
   async startAudioPipeline(localStream, targetUserId, sourceLang, targetLang) {
     await audioCaptureService.initialize(localStream);
-    
+
+    this.activeTargetUserId = targetUserId;
+    this.activeStreamRequestId = `stream_${Date.now()}`;
+    this.translationStreamReady = false;
+    this.seenTranslationPayloads.clear();
+    audioCaptureService.setStreamReady(false);
+    audioCaptureService.setMuted(this.isMuted);
+    this._registerTranslationSocketListeners();
+
     // Start streaming to server
     signalingService.socket.emit('startTranslationStream', {
       sourceLanguage: sourceLang || 'en',
       targetLanguage: targetLang || 'hi',
       userId: targetUserId,
-      requestId: `stream_${Date.now()}`
+      requestId: this.activeStreamRequestId
     });
 
     audioCaptureService.startStreaming((pcmBuffer) => {
-      signalingService.socket.emit('audioChunk', pcmBuffer);
+      if (!signalingService.socket?.connected || !this.translationStreamReady || this.isMuted) return;
+      const audioEmitter = signalingService.socket.volatile || signalingService.socket;
+      audioEmitter.emit('audioChunk', pcmBuffer);
     });
+  }
 
+  _registerTranslationSocketListeners() {
+    this._removeTranslationSocketListeners();
 
-    // The server sends two payloads per utterance:
-    // 1. text-only (data.audiocoming === true) — display subtitles immediately
-    // 2. audio-only (data.audioonly === true) — play TTS when ready
-    // This decoupling removes TTS latency from subtitle display.
-    signalingService.socket.on('translatedSpeech', async (data) => {
-      if (data.audio) {
+    const handleTranslatedSpeech = async (data) => {
+      const payloadType = data.audioonly || data.audio ? 'audio' : data.partial ? 'partial' : 'text';
+      const dedupeKey = `${data.requestId || 'no-id'}:${payloadType}:${data.isLocal ? 'local' : 'remote'}`;
+      if (this.seenTranslationPayloads.has(dedupeKey)) return;
+      this.seenTranslationPayloads.add(dedupeKey);
+      if (this.seenTranslationPayloads.size > 200) {
+        this.seenTranslationPayloads = new Set(Array.from(this.seenTranslationPayloads).slice(-100));
+      }
+
+      // Only the listener should hear translated TTS. The speaker keeps their
+      // live microphone path and local captions, avoiding duplicate self-audio.
+      if (data.audio && !data.isLocal) {
         await translationAudioService.enqueueAudio(data.audio);
       }
 
       // Only surface to UI if this payload carries text (avoids duplicate subtitle updates)
-      if (this.onTranslatedSpeech && !data.audioonly) {
+      if (this.onTranslatedSpeech && data.text) {
         this.onTranslatedSpeech(data);
       }
+    };
+
+    const handleStatus = (data) => {
+      if (data.status === 'live') {
+        this.translationStreamReady = true;
+        audioCaptureService.setStreamReady(true);
+      } else if (data.status === 'connecting' || data.status === 'off') {
+        this.translationStreamReady = false;
+        audioCaptureService.setStreamReady(false);
+      }
+      this.onTranslationStatus?.(data);
+    };
+
+    const handleError = (data) => {
+      this.onTranslationStatus?.({ status: 'degraded', message: data.message, requestId: data.requestId });
+    };
+
+    const handleLatencyMetric = (data) => {
+      this.onTranslationLatencyMetric?.(data);
+    };
+
+    this.translationHandlers = {
+      translatedSpeech: handleTranslatedSpeech,
+      translationStreamStatus: handleStatus,
+      translationStreamError: handleError,
+      translationLatencyMetric: handleLatencyMetric,
+    };
+
+    signalingService.socket.on('translatedSpeech', handleTranslatedSpeech);
+    signalingService.socket.on('translationStreamStatus', handleStatus);
+    signalingService.socket.on('translationStreamError', handleError);
+    signalingService.socket.on('translationLatencyMetric', handleLatencyMetric);
+  }
+
+  _removeTranslationSocketListeners() {
+    if (!this.translationHandlers || !signalingService.socket) return;
+    Object.entries(this.translationHandlers).forEach(([event, handler]) => {
+      signalingService.removeListener(event, handler);
     });
+    this.translationHandlers = null;
+  }
+
+  setMuted(isMuted) {
+    this.isMuted = Boolean(isMuted);
+    audioCaptureService.setMuted(this.isMuted);
+    if (this.isMuted) {
+      audioCaptureService.setStreamReady(false);
+    } else if (this.translationStreamReady) {
+      audioCaptureService.setStreamReady(true);
+    }
   }
 
   handleCallEnded() {
     this.cleanup();
   }
 
-  handleUserBusy(data) {
+  handleUserBusy() {
     console.log('CallManager: Remote user is busy');
     if (this.deliveryTimer) {
       clearTimeout(this.deliveryTimer);
@@ -186,11 +270,25 @@ class CallManager {
   }
 
   cleanup() {
+    try {
+      signalingService.socket?.emit('stopTranslationStream', {
+        requestId: this.activeStreamRequestId,
+        userId: this.activeTargetUserId
+      });
+    } catch {
+      // best-effort cleanup
+    }
+    this._removeTranslationSocketListeners();
     if (this.pcManager) this.pcManager.cleanup();
     mediaTrackManager.stopAllTracks();
     audioCaptureService.cleanup();
     translationAudioService.cleanup();
     this.currentCallSession = null;
+    this.translationStreamReady = false;
+    this.activeTargetUserId = null;
+    this.activeStreamRequestId = null;
+    this.seenTranslationPayloads.clear();
+    this.onTranslationStatus?.({ status: 'off' });
   }
 }
 

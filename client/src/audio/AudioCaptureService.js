@@ -9,6 +9,8 @@ class AudioCaptureService {
     this.workletNode = null;
     this.source = null;
     this.isStreaming = false;
+    this.streamReady = false;
+    this.isMuted = false;
     this.onPCMData = null; // Callback for PCM chunks
   }
 
@@ -34,7 +36,7 @@ class AudioCaptureService {
       this.workletNode = new AudioWorkletNode(this.audioContext, 'vaani-processor');
 
       this.workletNode.port.onmessage = (event) => {
-        if (this.isStreaming && this.onPCMData) {
+        if (this.isStreaming && this.streamReady && !this.isMuted && this.onPCMData) {
           const float32Data = event.data;
           const int16Data = this.float32ToInt16(float32Data);
           this.onPCMData(int16Data);
@@ -58,6 +60,15 @@ class AudioCaptureService {
 
   stopStreaming() {
     this.isStreaming = false;
+    this.streamReady = false;
+  }
+
+  setStreamReady(isReady) {
+    this.streamReady = Boolean(isReady);
+  }
+
+  setMuted(isMuted) {
+    this.isMuted = Boolean(isMuted);
   }
 
   float32ToInt16(float32Array) {
@@ -71,6 +82,8 @@ class AudioCaptureService {
 
   async cleanup() {
     this.stopStreaming();
+    this.streamReady = false;
+    this.isMuted = false;
     if (this.source) this.source.disconnect();
     if (this.workletNode) this.workletNode.disconnect();
     if (this.audioContext) {

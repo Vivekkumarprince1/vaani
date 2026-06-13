@@ -6,12 +6,10 @@
  * @param {Object} userIdToSocketId - Map for O(1) lookups
  */
 const { translateSpeech, recognizeSpeech, translateText } = require('../utils/speechTranslator');
-const { translateSpeechDirect, toSpeechLocale, toLanguageCode, getTranslationConfig } = require('../utils/speechTranslationSDK');
-const { getCachedOrSynthesize } = require('../utils/textToSpeechModule');
 const serverMetrics = require('../utils/performanceMetrics');
-const sdk = require('microsoft-cognitiveservices-speech-sdk');
 const audioQueueManager = require('../queue/audioQueueManager');
 const redisManager = require('../redis/RedisManager');
+const oneToOneSessionManager = require('../translation/OneToOneTranslationSessionManager');
 
 /**
  * Resolve a receiver's online status + preferred language.
@@ -524,179 +522,54 @@ const handleAudioTranslation = (io, socket, users, userIdToSocketId) => {
    * Start a continuous speech translation stream
    */
   socket.on('startTranslationStream', async (data) => {
-    const { sourceLanguage, targetLanguage, userId, requestId } = data;
-    console.log(`🚀 [STREAM] Starting translation stream: ${sourceLanguage} -> ${targetLanguage} (User: ${userId})`);
+    try {
+      const { sourceLanguage, targetLanguage, userId, requestId } = data;
+      console.log(`🚀 [STREAM] Starting 1:1 translation stream: ${sourceLanguage} -> ${targetLanguage} (User: ${userId})`);
 
-    const receiver = await resolveReceiver(userId, users, userIdToSocketId);
-    if (!receiver.online) {
-      console.error('Receiver not found:', userId);
-      socket.emit('error', { message: 'Receiver not found', requestId });
-      return;
+      const receiver = await resolveReceiver(userId, users, userIdToSocketId);
+      if (!receiver.online) {
+        console.error('Receiver not found:', userId);
+        socket.emit('translationStreamError', { message: 'Receiver not found', requestId });
+        socket.emit('error', { message: 'Receiver not found', requestId });
+        return;
+      }
+
+      await oneToOneSessionManager.startSession({
+        io,
+        socket,
+        receiverUserId: userId,
+        sourceLanguage,
+        targetLanguage: receiver.preferredLanguage || targetLanguage || 'en',
+        requestId,
+      });
+    } catch (err) {
+      console.error('❌ [STREAM] Failed to start 1:1 translation stream:', err);
+      socket.emit('translationStreamError', {
+        message: 'Failed to start translation stream',
+        error: err?.message || String(err),
+        requestId: data?.requestId,
+      });
     }
-
-    const finalTargetLanguage = receiver.preferredLanguage || targetLanguage || 'en';
-
-    const sourceLocale = toSpeechLocale(sourceLanguage);
-    const targetCode = toLanguageCode(finalTargetLanguage);
-    const config = getTranslationConfig(sourceLocale, [targetCode]);
-
-    const pushStream = sdk.AudioInputStream.createPushStream(
-      sdk.AudioStreamFormat.getWaveFormatPCM(16000, 16, 1)
-    );
-    const audioConfig = sdk.AudioConfig.fromStreamInput(pushStream);
-    const recognizer = new sdk.TranslationRecognizer(config, audioConfig);
-
-    // Store in socket for later chunks
-    socket.translationStream = {
-      recognizer,
-      pushStream,
-      targetCode,
-      receiverUserId: userId,
-      requestId,
-      finalTargetLanguage
-    };
-
-    recognizer.recognizing = (s, e) => {
-      if (e.result.reason === sdk.ResultReason.TranslatingSpeech) {
-        const partial = {
-          text: {
-            original: e.result.text,
-            translated: e.result.translations.get(targetCode) || ''
-          },
-          partial: true,
-          requestId
-        };
-        // Live partials to BOTH sides so captions update in real time as the
-        // speaker talks (previously only the sender saw partials, so the
-        // listener waited for the full final segment + TTS before seeing text).
-        socket.emit('translatedSpeech', { ...partial, isLocal: true });
-        io.to(`user_${userId}`).emit('translatedSpeech', { ...partial, isLocal: false });
-      }
-    };
-
-    recognizer.recognized = async (s, e) => {
-      if (e.result.reason === sdk.ResultReason.TranslatedSpeech) {
-        const original = e.result.text;
-        const translated = e.result.translations.get(targetCode) || '';
-
-        if (!original) return;
-
-        console.log(`🎯 [STREAM] Recognized: "${original}" -> "${translated}"`);
-
-        // Phase 1: send FINAL text immediately (no TTS wait) so captions lock in
-        // on both sides right away.
-        const textData = {
-          text: { original, translated },
-          audio: null,
-          partial: false,
-          audiocoming: true, // hint: audio will arrive in a follow-up event
-          requestId,
-          timestamp: Date.now()
-        };
-        socket.emit('translatedSpeech', { ...textData, isLocal: true });
-        io.to(`user_${userId}`).emit('translatedSpeech', { ...textData, isLocal: false });
-
-        // Phase 2: synthesize TTS AFTER text is on the wire, then send audio-only.
-        let ttsBuffer = null;
-        try {
-          ttsBuffer = await getCachedOrSynthesize(translated, finalTargetLanguage);
-        } catch (err) {
-          console.error('TTS failed in stream:', err);
-        }
-
-        if (ttsBuffer) {
-          const audioData = {
-            text: null,
-            audio: ttsBuffer,
-            partial: false,
-            audioonly: true,
-            requestId,
-            timestamp: Date.now()
-          };
-          socket.emit('translatedSpeech', { ...audioData, isLocal: true });
-          io.to(`user_${userId}`).emit('translatedSpeech', { ...audioData, isLocal: false });
-        }
-      }
-    };
-
-    recognizer.canceled = (s, e) => {
-      console.warn(`⚠️ [STREAM] Canceled: ${e.reason}`);
-      if (e.reason === sdk.CancellationReason.Error) {
-        console.error(`Error details: ${e.errorDetails}`);
-        // Notify client of translation stream error
-        socket.emit('translationStreamError', { 
-          message: e.errorDetails || 'Azure Speech Service connection failed',
-          reason: e.reason,
-          requestId: socket.translationStream?.requestId
-        });
-        // Clean up on error
-        if (socket.translationStream) {
-          try {
-            pushStream.close();
-            recognizer.close();
-          } catch (cleanupErr) {
-            console.error('Error during cleanup:', cleanupErr);
-          }
-          socket.translationStream = null;
-        }
-      }
-    };
-
-    recognizer.sessionStopped = (s, e) => {
-      console.log('🏁 [STREAM] Session stopped');
-    };
-
-    recognizer.startContinuousRecognitionAsync(
-      () => console.log('✅ [STREAM] Continuous recognition started'),
-      (err) => {
-        console.error('❌ [STREAM] Failed to start recognition:', err);
-        // Notify client of startup failure
-        socket.emit('translationStreamError', { 
-          message: 'Failed to start translation stream',
-          error: err?.message || String(err),
-          requestId: data.requestId
-        });
-        // Clean up on startup failure
-        try {
-          pushStream.close();
-          recognizer.close();
-        } catch (cleanupErr) {
-          console.error('Error during cleanup:', cleanupErr);
-        }
-        socket.translationStream = null;
-      }
-    );
   });
 
   /**
    * Handle incoming PCM chunks
    */
   socket.on('audioChunk', (chunk) => {
-    if (socket.translationStream && socket.translationStream.pushStream) {
-      // chunk is expected to be an ArrayBuffer/Buffer of Int16 PCM
-      socket.translationStream.pushStream.write(chunk);
-    }
+    oneToOneSessionManager.writeChunkForSocket(socket.id, chunk);
   });
 
   /**
    * Stop the translation stream
    */
   socket.on('stopTranslationStream', () => {
-    if (socket.translationStream) {
-      const { recognizer, pushStream } = socket.translationStream;
-      pushStream.close();
-      recognizer.stopContinuousRecognitionAsync(
-        () => {
-          recognizer.close();
-          console.log('🛑 [STREAM] Translation stream stopped');
-        },
-        (err) => {
-          console.error('❌ [STREAM] Error stopping recognizer:', err);
-          recognizer.close();
-        }
-      );
-      socket.translationStream = null;
-    }
+    oneToOneSessionManager.stopSessionForSocket(socket.id, 'client_stopped').catch((err) => {
+      console.warn('[audioHandler] stopTranslationStream cleanup failed:', err.message);
+    });
+  });
+
+  socket.on('disconnect', () => {
+    oneToOneSessionManager.stopSessionForSocket(socket.id, 'disconnect').catch(() => {});
   });
 
 };

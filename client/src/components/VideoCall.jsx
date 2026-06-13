@@ -22,23 +22,47 @@ const VideoCall = ({
   endCall,
   isMuted,
   isCameraOff,
-  selectedUser,
   localOriginal,
   localTranslated,
   remoteOriginal,
-  remoteTranslated
+  remoteTranslated,
+  translationStatus = 'off',
+  translationLatency = null,
+  isRemoteAudioDucked = false
 }) => {
   const { currentLanguage, languages } = useTranslation();
   
   // Get language names for display
   const yourLanguageName = languages?.[currentLanguage]?.name || currentLanguage;
-  const theirLanguageName = selectedUser?.preferredLanguage 
-    ? (languages?.[selectedUser.preferredLanguage]?.name || selectedUser.preferredLanguage)
-    : 'Their Language';
+  const statusMeta = {
+    connecting: { label: 'Translation connecting', className: 'border-amber-400/50 bg-amber-900/50 text-amber-100' },
+    live: { label: 'Translation live', className: 'border-emerald-400/50 bg-emerald-900/50 text-emerald-100' },
+    degraded: { label: 'Translation degraded', className: 'border-orange-400/50 bg-orange-900/50 text-orange-100' },
+    off: { label: 'Translation off', className: 'border-gray-500/50 bg-gray-900/70 text-gray-200' },
+  }[translationStatus] || { label: 'Translation off', className: 'border-gray-500/50 bg-gray-900/70 text-gray-200' };
 
+  const latencyText = translationLatency?.latencyMs
+    ? `${translationLatency.phase || 'latency'} ${Math.round(translationLatency.latencyMs)}ms`
+    : null;
 
   return (
     <div className="relative h-[calc(100vh-220px)] rounded-lg p-4 overflow-hidden bg-black flex flex-col">
+      <div className="absolute top-4 left-4 z-20 flex flex-wrap gap-2 text-xs">
+        <div className={`rounded-md border px-2.5 py-1.5 shadow-lg backdrop-blur ${statusMeta.className}`}>
+          {statusMeta.label}
+        </div>
+        {latencyText && (
+          <div className="rounded-md border border-sky-400/40 bg-sky-950/60 px-2.5 py-1.5 text-sky-100 shadow-lg backdrop-blur">
+            {latencyText}
+          </div>
+        )}
+        {isRemoteAudioDucked && (
+          <div className="rounded-md border border-indigo-400/40 bg-indigo-950/60 px-2.5 py-1.5 text-indigo-100 shadow-lg backdrop-blur">
+            Original audio lowered
+          </div>
+        )}
+      </div>
+
       {/* Video streams (local and remote) with transcriptions overlaid */}
       <VideoStreams
         localVideoRef={localVideoRef}

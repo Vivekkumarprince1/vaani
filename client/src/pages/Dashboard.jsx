@@ -64,6 +64,9 @@ const Dashboard = () => {
   const [localTranslated, setLocalTranslated] = useState('');
   const [remoteOriginal, setRemoteOriginal] = useState('');
   const [remoteTranslated, setRemoteTranslated] = useState('');
+  const [translationStatus, setTranslationStatus] = useState('off');
+  const [translationLatency, setTranslationLatency] = useState(null);
+  const [isRemoteAudioDucked, setIsRemoteAudioDucked] = useState(false);
 
   const [incomingCall, setIncomingCall] = useState(null);
   const [acceptingCall, setAcceptingCall] = useState(false);
@@ -109,6 +112,10 @@ const Dashboard = () => {
     setIncomingCall(null);
     setLocalStream(null);
     setRemoteStream(null);
+    setTranslationStatus('off');
+    setTranslationLatency(null);
+    setIsRemoteAudioDucked(false);
+    if (remoteVideoRef.current) remoteVideoRef.current.volume = 1;
     callSoundPlayer.stopAll();
     callManager.cleanup();
   }, []);
@@ -963,6 +970,18 @@ const Dashboard = () => {
               setRemoteTranslated(data.text.translated);
             }
           }
+        },
+        onTranslationStatus: (data) => {
+          setTranslationStatus(data?.status || 'off');
+        },
+        onTranslationLatencyMetric: (metric) => {
+          setTranslationLatency(metric);
+        },
+        onTranslationPlaybackStateChange: (isPlaying) => {
+          setIsRemoteAudioDucked(Boolean(isPlaying));
+          if (remoteVideoRef.current) {
+            remoteVideoRef.current.volume = isPlaying ? 0.25 : 1;
+          }
         }
       });
 
@@ -1427,6 +1446,9 @@ const Dashboard = () => {
       const stream = await navigator.mediaDevices.getUserMedia(constraints);
       setLocalStream(stream);
       setInCall(true);
+      setTranslationStatus('connecting');
+      setTranslationLatency(null);
+      setIsRemoteAudioDucked(false);
 
       // Delegate to CallManager
       const targetLang = selectedUser?.preferredLanguage || 'hi';
@@ -1459,6 +1481,9 @@ const Dashboard = () => {
       setLocalStream(stream);
       setCallType(incomingCall.callType);
       setInCall(true);
+      setTranslationStatus('connecting');
+      setTranslationLatency(null);
+      setIsRemoteAudioDucked(false);
       setIncomingCall(null);
       setAcceptingCall(false);
 
@@ -1537,6 +1562,7 @@ const Dashboard = () => {
       if (audioTrack) {
         audioTrack.enabled = !audioTrack.enabled;
         setIsMuted(!audioTrack.enabled);
+        callManager.setMuted(!audioTrack.enabled);
       }
     }
   };
@@ -1938,6 +1964,9 @@ const Dashboard = () => {
               localTranslated={localTranslated}
               remoteOriginal={remoteOriginal}
               remoteTranslated={remoteTranslated}
+              translationStatus={translationStatus}
+              translationLatency={translationLatency}
+              isRemoteAudioDucked={isRemoteAudioDucked}
             />
           ) : (selectedUser || selectedRoom) ? (
             <MessageSection

@@ -115,20 +115,22 @@ class SocketManager {
       });
     });
 
-    // Development helper: log all incoming socket events to debug missing signals
+    // Development helper: log incoming socket events to debug missing signals.
+    const isDev = Boolean(import.meta.env?.DEV);
     try {
-      // Always log in development, and specifically log group call events
-      this.socket.onAny((event, ...args) => {
-        try {
-          if (event.includes('group') || event.includes('call') || event.includes('Call')) {
-            console.log(`🔊 [SOCKET EVENT] ${event}:`, args);
-          } else if (process.env.NODE_ENV !== 'production') {
-            console.debug('[socket.onAny] event:', event, 'args:', args);
+      if (isDev) {
+        this.socket.onAny((event, ...args) => {
+          try {
+            if (event.includes('group') || event.includes('call') || event.includes('Call')) {
+              console.log(`🔊 [SOCKET EVENT] ${event}:`, args);
+            } else {
+              console.debug('[socket.onAny] event:', event, 'args:', args);
+            }
+          } catch {
+            // ignore
           }
-        } catch (e) {
-          // ignore
-        }
-      });
+        });
+      }
     } catch (e) {
       // some socket versions may not support onAny; ignore silently
       console.warn('Socket.onAny not supported:', e);
@@ -145,11 +147,11 @@ class SocketManager {
             const ev = new CustomEvent('app:incomingCall', { detail: args });
             window.dispatchEvent(ev);
           }
-        } catch (e) {
+        } catch {
           // ignore DOM dispatch errors in non-browser environments
         }
       });
-    } catch (e) {
+    } catch {
       // ignore if socket doesn't support
     }
   }
@@ -193,7 +195,11 @@ class SocketManager {
 
       // If socket exists, detach from socket as well
       if (this.socket) {
-        try { this.socket.off(event, handler); } catch (e) {}
+        try {
+          this.socket.off(event, handler);
+        } catch {
+          // Best-effort detach; stale listeners are cleaned up on reconnect.
+        }
       }
       return;
     }

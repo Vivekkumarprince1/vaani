@@ -9,6 +9,7 @@ class TranslationAudioService {
     this.destination = null;
     this.playbackQueue = [];
     this.isPlaying = false;
+    this.onPlaybackStateChange = null;
   }
 
   initialize() {
@@ -34,7 +35,7 @@ class TranslationAudioService {
     if (!this.audioContext) this.initialize();
 
     try {
-      const decodedBuffer = await this.audioContext.decodeAudioData(audioBuffer);
+      const decodedBuffer = await this.audioContext.decodeAudioData(this._toArrayBuffer(audioBuffer));
       this.playbackQueue.push(decodedBuffer);
       
       if (!this.isPlaying) {
@@ -48,10 +49,12 @@ class TranslationAudioService {
   async playNext() {
     if (this.playbackQueue.length === 0) {
       this.isPlaying = false;
+      this._notifyPlaybackState(false);
       return;
     }
 
     this.isPlaying = true;
+    this._notifyPlaybackState(true);
     const buffer = this.playbackQueue.shift();
     const source = this.audioContext.createBufferSource();
     source.buffer = buffer;
@@ -73,10 +76,29 @@ class TranslationAudioService {
 
   cleanup() {
     this.playbackQueue = [];
+    this._notifyPlaybackState(false);
     if (this.audioContext) {
       this.audioContext.close();
       this.audioContext = null;
     }
+  }
+
+  setPlaybackStateCallback(callback) {
+    this.onPlaybackStateChange = callback;
+  }
+
+  _notifyPlaybackState(isPlaying) {
+    if (this.onPlaybackStateChange) {
+      this.onPlaybackStateChange(isPlaying);
+    }
+  }
+
+  _toArrayBuffer(audioBuffer) {
+    if (audioBuffer instanceof ArrayBuffer) return audioBuffer.slice(0);
+    if (ArrayBuffer.isView(audioBuffer)) {
+      return audioBuffer.buffer.slice(audioBuffer.byteOffset, audioBuffer.byteOffset + audioBuffer.byteLength);
+    }
+    return audioBuffer;
   }
 }
 

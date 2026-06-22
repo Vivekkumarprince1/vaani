@@ -158,6 +158,10 @@ class CallManager {
 
   async startAudioPipeline(localStream, targetUserId, sourceLang, targetLang) {
     await audioCaptureService.initialize(localStream);
+    translationAudioService.initialize();
+    await translationAudioService.resume().catch((err) => {
+      console.warn('CallManager: Translation audio resume failed:', err?.message || err);
+    });
 
     this.activeTargetUserId = targetUserId;
     this.activeStreamRequestId = `stream_${Date.now()}`;

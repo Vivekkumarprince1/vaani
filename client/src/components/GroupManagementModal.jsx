@@ -2,7 +2,7 @@
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 
-const GroupManagementModal = ({ isOpen, onClose, room, users, currentUserId, onRoomUpdate }) => {
+const GroupManagementModal = ({ isOpen, onClose, room, users = [], currentUserId, onRoomUpdate }) => {
   // console.log('GroupManagementModal props:', { isOpen, room, users: users?.length, currentUserId });
   const [availableUsers, setAvailableUsers] = useState([]);
   const [selectedUserId, setSelectedUserId] = useState('');

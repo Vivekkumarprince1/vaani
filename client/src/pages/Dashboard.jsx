@@ -28,6 +28,7 @@ const NotificationSettings = React.lazy(() => import('../components/Notification
 
 
 const API_URL = import.meta.env.VITE_API_URL || '/api';
+const SELECTED_CHAT_STORAGE_KEY = 'vaani:selected-chat';
 
 const Dashboard = () => {
   const navigate = useNavigate();
@@ -266,7 +267,7 @@ const Dashboard = () => {
   const fetchMessages = async (userId, roomId, opts = {}) => {
     try {
       const token = localStorage.getItem('token');
-      const params = userId ? { userId } : { roomId: selectedRoom._id };
+      const params = userId ? { userId } : { roomId };
       params.limit = opts.limit || 30;
       if (opts.before) params.before = opts.before;
       const res = await axios.get(`${API_URL}/chat/history`, {
@@ -1182,6 +1183,39 @@ const Dashboard = () => {
     }
   }, [selectedUser, selectedRoom]);
 
+  useEffect(() => {
+    if (!isAuthenticated || selectedUser || selectedRoom) return;
+
+    let savedSelection = null;
+    try {
+      savedSelection = JSON.parse(localStorage.getItem(SELECTED_CHAT_STORAGE_KEY) || 'null');
+    } catch {
+      localStorage.removeItem(SELECTED_CHAT_STORAGE_KEY);
+      return;
+    }
+
+    if (!savedSelection?.type || !savedSelection?.id) return;
+
+    if (savedSelection.type === 'user' && users.length) {
+      const restoredUser = users.find((u) => String(u.id || u._id) === String(savedSelection.id));
+      if (restoredUser) {
+        setSelectedUser(restoredUser);
+        setSelectedRoom(null);
+      }
+    }
+
+    if (savedSelection.type === 'room' && rooms.length) {
+      const restoredRoom = rooms.find((room) => String(room._id) === String(savedSelection.id));
+      if (restoredRoom) {
+        setSelectedRoom(restoredRoom);
+        setSelectedUser(null);
+        if (socketManager.socket?.connected) {
+          socketManager.emit('joinRoom', restoredRoom._id);
+        }
+      }
+    }
+  }, [isAuthenticated, selectedUser, selectedRoom, users, rooms]);
+
   // Select user
   const selectUser = useCallback((u) => {
     if (inCall || callerRinging || inGroupCall) {
@@ -1201,6 +1235,7 @@ const Dashboard = () => {
 
     setSelectedUser(u);
     setSelectedRoom(null);
+    localStorage.setItem(SELECTED_CHAT_STORAGE_KEY, JSON.stringify({ type: 'user', id: u.id || u._id }));
     setShowSidebar(false);
   }, [inCall, callerRinging, inGroupCall]);
 
@@ -1233,6 +1268,7 @@ const Dashboard = () => {
 
     setSelectedRoom(room);
     setSelectedUser(null);
+    localStorage.setItem(SELECTED_CHAT_STORAGE_KEY, JSON.stringify({ type: 'room', id: room._id }));
     setShowSidebar(false);
   }, [inCall, callerRinging, inGroupCall]);
 
@@ -1978,9 +2014,7 @@ const Dashboard = () => {
               user={user}
               startCall={startCall}
               formatTime={formatTime}
-              onManageGroup={(room) => {
-                setManagingRoom(room);
-              }}
+              onManageGroup={handleManageGroup}
             />
           ) : (
             <div className="flex-1 flex flex-col items-center justify-center p-8">
@@ -2212,13 +2246,15 @@ const Dashboard = () => {
       {managingRoom && (
         <Suspense fallback={<Loader />}>
           <GroupManagementModal
+            isOpen={Boolean(managingRoom)}
             room={managingRoom}
+            users={users}
             onClose={() => setManagingRoom(null)}
-            onUpdate={() => {
+            onRoomUpdate={(updatedRoom) => {
+              handleRoomUpdate(updatedRoom);
               fetchRooms();
-              setManagingRoom(null);
             }}
-            currentUser={user}
+            currentUserId={user?._id || user?.id}
           />
         </Suspense>
       )}

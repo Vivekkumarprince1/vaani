@@ -1,4 +1,5 @@
 const sdk = require('microsoft-cognitiveservices-speech-sdk');
+const crypto = require('crypto');
 const { config, requireEnv } = require('./env');
 const { retry } = require('./retry');
 const cache = require('./translationCache');
@@ -11,8 +12,8 @@ const pLimit = (pLimitModule && pLimitModule.default) ? pLimitModule.default : p
 // Validate lazily when translation is actually invoked.
 
 function getSpeechCredentialsOrThrow() {
-  const key = config.AZURE_SPEECH_KEY;
-  const region = config.AZURE_SPEECH_REGION;
+  const key = (config.AZURE_SPEECH_KEY || '').trim();
+  const region = (config.AZURE_SPEECH_REGION || '').trim().toLowerCase();
   if (!key || !region) {
     throw new Error('Azure Speech credentials missing: set AZURE_SPEECH_KEY and AZURE_SPEECH_REGION to use speech translation');
   }
@@ -110,6 +111,20 @@ function makeCacheKey(prefix, data) {
 }
 
 /**
+ * Build a cheap audio fingerprint for cache keys without base64-encoding the
+ * full payload. We hash a small PCM window + total length.
+ */
+function audioFingerprint(audioBuffer, offset = 44, windowBytes = 160) {
+  const start = Math.min(Math.max(offset, 0), audioBuffer.length);
+  const end = Math.min(start + Math.max(windowBytes, 1), audioBuffer.length);
+  return crypto
+    .createHash('sha1')
+    .update(audioBuffer.subarray(start, end))
+    .update(String(audioBuffer.length))
+    .digest('hex');
+}
+
+/**
  * 🔥 OPTIMIZED: Azure Speech Translation SDK (SINGLE API CALL)
  * This combines speech recognition and translation into ONE API call
  * Expected improvement: 200-400ms faster than separate STT + Translation
@@ -148,8 +163,7 @@ const translateSpeechDirect = async (audioBuffer, sourceLanguage, targetLanguage
 
   // Improved cache key: use more data + length to avoid WAV header collisions
   const cacheKey = makeCacheKey('stt_translate', { 
-    hash: audioBuffer.slice(44, 108).toString('base64'), 
-    len: audioBuffer.length,
+    hash: audioFingerprint(audioBuffer),
     sourceLocale, 
     targetLangCode 
   });
@@ -256,7 +270,11 @@ const translateSpeechToMultipleLanguages = async (audioBuffer, sourceLanguage, t
   const sourceLocale = toSpeechLocale(sourceLanguage);
   const targetCodes = targetLanguages.map((l) => toLanguageCode(l));
 
-  const cacheKey = makeCacheKey('stt_translate_multi', { hash: audioBuffer.toString('base64').slice(0, 64), sourceLocale, targetCodes });
+  const cacheKey = makeCacheKey('stt_translate_multi', {
+    hash: audioFingerprint(audioBuffer),
+    sourceLocale,
+    targetCodes
+  });
   const cached = cache.get(cacheKey);
   if (cached) return { original: cached.original, translations: cached.translations, error: null };
 

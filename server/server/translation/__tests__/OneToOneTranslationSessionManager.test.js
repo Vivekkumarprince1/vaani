@@ -257,7 +257,14 @@ describe('OneToOneTranslationSessionManager', () => {
     tts.resolve(Buffer.from([9, 9]));
     await flush();
     expect(socket.emitted.some((e) => e.event === 'translatedSpeech' && e.payload.audioonly && e.payload.audio)).toBe(true);
-    expect(io.emitted.some((e) => e.event === 'translatedSpeech' && e.payload.audioonly && e.payload.audio)).toBe(true);
+    const remoteAudio = io.emitted.find((e) => e.event === 'translatedSpeech' && e.payload.audioonly && e.payload.audio);
+    expect(remoteAudio).toBeTruthy();
+    expect(remoteAudio.room).toBe('user_u2');
+    expect(remoteAudio.payload).toMatchObject({
+      isLocal: false,
+      audioonly: true,
+      targetLanguage: 'hi',
+    });
   });
 
   test('keeps final captions when TTS fails and reports degraded status', async () => {

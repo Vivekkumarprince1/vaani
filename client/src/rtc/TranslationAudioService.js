@@ -3,6 +3,11 @@
  * Handles decoding of translated audio chunks and injection into WebRTC.
  * Uses AudioContext and MediaStreamDestination to create a track for RTCPeerConnection.
  */
+const MAX_PLAYBACK_QUEUE = Number.parseInt(
+  import.meta.env.VITE_TRANSLATION_AUDIO_QUEUE_LIMIT || '3',
+  10
+);
+
 class TranslationAudioService {
   constructor() {
     this.audioContext = null;
@@ -10,13 +15,23 @@ class TranslationAudioService {
     this.playbackQueue = [];
     this.isPlaying = false;
     this.onPlaybackStateChange = null;
+    this.currentSource = null;
   }
 
   initialize() {
+    if (this.audioContext && this.audioContext.state !== 'closed') return;
+
     this.audioContext = new (window.AudioContext || window.webkitAudioContext)({
       sampleRate: 48000, // Higher quality for playback
     });
     this.destination = this.audioContext.createMediaStreamDestination();
+  }
+
+  async resume() {
+    if (!this.audioContext || this.audioContext.state === 'closed') this.initialize();
+    if (this.audioContext.state === 'suspended') {
+      await this.audioContext.resume();
+    }
   }
 
   /**
@@ -35,11 +50,20 @@ class TranslationAudioService {
     if (!this.audioContext) this.initialize();
 
     try {
-      const decodedBuffer = await this.audioContext.decodeAudioData(this._toArrayBuffer(audioBuffer));
+      await this.resume();
+      const normalizedBuffer = await this._toArrayBuffer(audioBuffer);
+      if (!normalizedBuffer || normalizedBuffer.byteLength === 0) return;
+
+      const decodedBuffer = await this.audioContext.decodeAudioData(normalizedBuffer);
+      while (this.playbackQueue.length >= MAX_PLAYBACK_QUEUE) {
+        this.playbackQueue.shift();
+      }
       this.playbackQueue.push(decodedBuffer);
       
       if (!this.isPlaying) {
-        this.playNext();
+        this.playNext().catch((err) => {
+          console.error('TranslationAudioService: Playback failed', err);
+        });
       }
     } catch (e) {
       console.error('TranslationAudioService: Error decoding audio', e);
@@ -55,8 +79,17 @@ class TranslationAudioService {
 
     this.isPlaying = true;
     this._notifyPlaybackState(true);
+    await this.resume();
+
+    if (!this.audioContext || this.audioContext.state === 'closed') {
+      this.isPlaying = false;
+      this._notifyPlaybackState(false);
+      return;
+    }
+
     const buffer = this.playbackQueue.shift();
     const source = this.audioContext.createBufferSource();
+    this.currentSource = source;
     source.buffer = buffer;
     
     // Play translated audio locally so the current user can hear the translation.
@@ -68,7 +101,10 @@ class TranslationAudioService {
     source.connect(this.audioContext.destination);
 
     source.onended = () => {
-      this.playNext();
+      if (this.currentSource === source) this.currentSource = null;
+      this.playNext().catch((err) => {
+        console.error('TranslationAudioService: Playback queue failed', err);
+      });
     };
 
     source.start();
@@ -77,10 +113,20 @@ class TranslationAudioService {
   cleanup() {
     this.playbackQueue = [];
     this._notifyPlaybackState(false);
+    if (this.currentSource) {
+      try {
+        this.currentSource.stop();
+      } catch (err) {
+        console.warn('TranslationAudioService: Source stop skipped', err?.message || err);
+      }
+      this.currentSource = null;
+    }
     if (this.audioContext) {
       this.audioContext.close();
       this.audioContext = null;
     }
+    this.destination = null;
+    this.isPlaying = false;
   }
 
   setPlaybackStateCallback(callback) {
@@ -93,12 +139,18 @@ class TranslationAudioService {
     }
   }
 
-  _toArrayBuffer(audioBuffer) {
+  async _toArrayBuffer(audioBuffer) {
     if (audioBuffer instanceof ArrayBuffer) return audioBuffer.slice(0);
     if (ArrayBuffer.isView(audioBuffer)) {
       return audioBuffer.buffer.slice(audioBuffer.byteOffset, audioBuffer.byteOffset + audioBuffer.byteLength);
     }
-    return audioBuffer;
+    if (typeof Blob !== 'undefined' && audioBuffer instanceof Blob) {
+      return audioBuffer.arrayBuffer();
+    }
+    if (audioBuffer?.type === 'Buffer' && Array.isArray(audioBuffer.data)) {
+      return new Uint8Array(audioBuffer.data).buffer;
+    }
+    return null;
   }
 }
 

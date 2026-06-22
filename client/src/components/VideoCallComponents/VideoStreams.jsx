@@ -17,7 +17,8 @@ const VideoStreams = ({
   remoteTranscript = '',
   remoteTranslated = '',
   yourLanguage = 'en',
-  yourLanguageName = 'Your Language'
+  yourLanguageName = 'Your Language',
+  muteRemoteAudio = false
 }) => {
   // Setup video streams when components receive new streams
   useEffect(() => {
@@ -33,7 +34,7 @@ const VideoStreams = ({
         
         // Set new stream
         ref.current.srcObject = stream;
-        ref.current.muted = isLocal; // Only mute local video
+        ref.current.muted = isLocal || (!isLocal && muteRemoteAudio);
         ref.current.playsInline = true;
         ref.current.autoplay = true;
         
@@ -85,7 +86,14 @@ const VideoStreams = ({
       cleanupVideo(localVideoRef);
       cleanupVideo(remoteVideoRef);
     };
-  }, [localStream, remoteStream, localVideoRef, remoteVideoRef]);
+  }, [localStream, remoteStream, localVideoRef, remoteVideoRef, muteRemoteAudio]);
+
+  useEffect(() => {
+    if (remoteVideoRef.current) {
+      remoteVideoRef.current.muted = muteRemoteAudio;
+      remoteVideoRef.current.volume = muteRemoteAudio ? 0 : 1;
+    }
+  }, [remoteVideoRef, muteRemoteAudio]);
 
   return (
     <>

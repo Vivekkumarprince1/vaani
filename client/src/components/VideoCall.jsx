@@ -36,10 +36,12 @@ const VideoCall = ({
   const yourLanguageName = languages?.[currentLanguage]?.name || currentLanguage;
   const statusMeta = {
     connecting: { label: 'Translation connecting', className: 'border-amber-400/50 bg-amber-900/50 text-amber-100' },
+    authenticating: { label: 'Translation authenticating', className: 'border-amber-400/50 bg-amber-900/50 text-amber-100' },
     live: { label: 'Translation live', className: 'border-emerald-400/50 bg-emerald-900/50 text-emerald-100' },
     degraded: { label: 'Translation degraded', className: 'border-orange-400/50 bg-orange-900/50 text-orange-100' },
     off: { label: 'Translation off', className: 'border-gray-500/50 bg-gray-900/70 text-gray-200' },
   }[translationStatus] || { label: 'Translation off', className: 'border-gray-500/50 bg-gray-900/70 text-gray-200' };
+  const shouldMuteRemoteOriginal = ['connecting', 'authenticating', 'live', 'degraded'].includes(translationStatus);
 
   const latencyText = translationLatency?.latencyMs
     ? `${translationLatency.phase || 'latency'} ${Math.round(translationLatency.latencyMs)}ms`
@@ -75,6 +77,7 @@ const VideoCall = ({
         remoteTranslated={remoteTranslated}
         yourLanguage={currentLanguage}
         yourLanguageName={yourLanguageName}
+        muteRemoteAudio={shouldMuteRemoteOriginal}
       />
 
       {/* Call controls (mute, camera, end call) */}

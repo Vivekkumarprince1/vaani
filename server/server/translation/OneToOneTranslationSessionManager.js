@@ -83,18 +83,19 @@ class OneToOneTranslationSessionManager {
       droppedBytes: 0,
       lastBackpressureStatusAt: 0,
       idleMonitor: null,
+      liveEmitted: false,
     };
 
     this.sessions.set(key, session);
     this.socketIndex.set(socket.id, key);
-    this._startIdleMonitor(session);
     this._wireRecognizer(session);
+    this._startIdleMonitor(session);
 
     await new Promise((resolve, reject) => {
       recognizer.startContinuousRecognitionAsync(
         () => {
           if (!session.active) return resolve();
-          this._emitStatus(socket, 'live', {
+          this._emitStatus(socket, 'authenticating', {
             requestId: streamId,
             targetLanguage: targetCode,
           });
@@ -198,8 +199,13 @@ class OneToOneTranslationSessionManager {
     const ResultReason = this.sdk.ResultReason;
     const CancellationReason = this.sdk.CancellationReason;
 
+    session.recognizer.sessionStarted = () => {
+      this._markLive(session);
+    };
+
     session.recognizer.recognizing = (_s, e) => {
       if (!session.active || e.result?.reason !== ResultReason.TranslatingSpeech) return;
+      this._markLive(session);
       const original = (e.result.text || '').trim();
       const translated = e.result.translations?.get(session.targetLanguage) || '';
       if (!original && !translated) return;
@@ -217,6 +223,7 @@ class OneToOneTranslationSessionManager {
 
     session.recognizer.recognized = (_s, e) => {
       if (!session.active || e.result?.reason !== ResultReason.TranslatedSpeech) return;
+      this._markLive(session);
       const original = (e.result.text || '').trim();
       const translated = e.result.translations?.get(session.targetLanguage) || '';
       if (!original) return;
@@ -228,14 +235,16 @@ class OneToOneTranslationSessionManager {
 
     session.recognizer.canceled = (_s, e) => {
       if (!session.active) return;
+      const classified = this._classifyCancellation(e);
       const message = e.reason === CancellationReason.Error
-        ? (e.errorDetails || 'Azure Speech Service connection failed')
+        ? classified.message
         : 'Translation stream canceled';
       this._emitStatus(session.socket, 'degraded', {
         requestId: session.requestId,
         reason: e.reason,
+        errorCode: classified.code,
       });
-      this._emitError(session.socket, message, session.requestId, e.errorDetails);
+      this._emitError(session.socket, message, session.requestId, classified.details);
       this.stopSession(session.key, 'canceled').catch(() => {});
     };
 
@@ -333,6 +342,32 @@ class OneToOneTranslationSessionManager {
     };
     session.socket.emit('translationLatencyMetric', payload);
     session.io.to(`user_${session.receiverUserId}`).emit('translationLatencyMetric', payload);
+  }
+
+  _markLive(session) {
+    if (!session.active || session.liveEmitted) return;
+    session.liveEmitted = true;
+    this._emitStatus(session.socket, 'live', {
+      requestId: session.requestId,
+      targetLanguage: session.targetLanguage,
+    });
+  }
+
+  _classifyCancellation(event) {
+    const details = event?.errorDetails || '';
+    if (details.includes('Unexpected server response: 401') || details.includes('StatusCode: 1006')) {
+      return {
+        code: 'azure_speech_auth_failed',
+        message: 'Azure Speech authentication failed. Check AZURE_SPEECH_KEY and AZURE_SPEECH_REGION in production; the key must belong to that exact region.',
+        details,
+      };
+    }
+
+    return {
+      code: 'azure_speech_stream_failed',
+      message: details || 'Azure Speech Service connection failed',
+      details,
+    };
   }
 
   _normalizeChunk(chunk) {

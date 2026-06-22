@@ -255,6 +255,45 @@ class NotificationManager {
     return Notification.permission;
   }
 
+  getPermissionModel(status = this.getPermissionStatus()) {
+    const models = {
+      granted: {
+        title: 'Notifications enabled',
+        message: 'Incoming calls, group calls, and new messages can alert you even when Vaani is in the background.',
+        detail: 'You can disable this later from browser site settings.',
+        tone: 'success',
+        actionLabel: 'Enabled',
+        canRequest: false,
+      },
+      denied: {
+        title: 'Notifications blocked',
+        message: 'Browser settings are blocking call and message alerts for Vaani.',
+        detail: 'Open site settings for this page, allow notifications, then refresh Vaani.',
+        tone: 'danger',
+        actionLabel: 'Refresh after allowing',
+        canRequest: false,
+      },
+      'not-supported': {
+        title: 'Notifications unavailable',
+        message: 'This browser does not support desktop notifications.',
+        detail: 'Incoming call and message alerts will stay inside the app.',
+        tone: 'warning',
+        actionLabel: 'Close',
+        canRequest: false,
+      },
+      default: {
+        title: 'Enable call and message alerts',
+        message: 'Allow Vaani to notify you for incoming calls, group calls, and new messages.',
+        detail: 'This only controls browser alerts; in-app call popups still work.',
+        tone: 'info',
+        actionLabel: 'Allow notifications',
+        canRequest: true,
+      },
+    };
+
+    return models[status] || models.default;
+  }
+
   /**
    * Check if browser supports notifications
    * @returns {boolean}

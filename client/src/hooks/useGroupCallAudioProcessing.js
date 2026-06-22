@@ -31,23 +31,55 @@ const useGroupCallAudioProcessing = (
   const audioContextRef = useRef(null);
   const sourceNodeRef = useRef(null);
   const workletNodeRef = useRef(null);
+  const isMutedRef = useRef(isMuted);
+  const currentLanguageRef = useRef(currentLanguage);
+  const callRoomIdRef = useRef(callRoomId);
 
   // TTS playback queue (sequential to prevent overlapping audio)
   const ttsQueueRef = useRef([]);
   const isPlayingRef = useRef(false);
   const currentAudioElRef = useRef(null);
 
+  useEffect(() => {
+    isMutedRef.current = isMuted;
+    currentLanguageRef.current = currentLanguage;
+    callRoomIdRef.current = callRoomId;
+  }, [isMuted, currentLanguage, callRoomId]);
+
   // ── Audio capture setup / teardown ────────────────────────────────────────
 
   useEffect(() => {
-    if (!localStream || !socket?.connected || isMuted) {
+    if (!localStream || !socket?.connected) {
       cleanupAudioCapture();
       return;
     }
 
     setupAudioCapture();
     return cleanupAudioCapture;
-  }, [localStream, socket, callRoomId, isMuted]);
+    // Capture graph lifecycle is intentionally tied to stream/socket/room only.
+    // Language and mute are read through refs to avoid reinitializing the audio graph.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [localStream, socket, callRoomId]);
+
+  // Keep the capture graph alive while muted to avoid teardown/reinit latency.
+  // We only suspend/resume the AudioContext and skip emits in _sendAudioForRecognition.
+  useEffect(() => {
+    const ctx = audioContextRef.current;
+    if (!ctx) return;
+
+    if (isMuted && ctx.state === 'running') {
+      ctx.suspend().catch((err) => {
+        console.warn('[useGroupCallAudioProcessing] Failed to suspend audio context:', err?.message || err);
+      });
+      return;
+    }
+
+    if (!isMuted && ctx.state === 'suspended') {
+      ctx.resume().catch((err) => {
+        console.warn('[useGroupCallAudioProcessing] Failed to resume audio context:', err?.message || err);
+      });
+    }
+  }, [isMuted]);
 
   const setupAudioCapture = async () => {
     try {
@@ -122,7 +154,6 @@ const useGroupCallAudioProcessing = (
 
   const _setupScriptProcessorFallback = () => {
     const ctx = audioContextRef.current;
-    // eslint-disable-next-line no-console
     console.warn('[useGroupCallAudioProcessing] Using deprecated ScriptProcessor');
     const processor = ctx.createScriptProcessor(2048, 1, 1);
     workletNodeRef.current = processor;
@@ -161,15 +192,27 @@ const useGroupCallAudioProcessing = (
 
   const cleanupAudioCapture = () => {
     if (workletNodeRef.current) {
-      try { workletNodeRef.current.disconnect(); } catch (e) {}
+      try {
+        workletNodeRef.current.disconnect();
+      } catch (err) {
+        console.warn('[useGroupCallAudioProcessing] Worklet disconnect failed:', err?.message || err);
+      }
       workletNodeRef.current = null;
     }
     if (sourceNodeRef.current) {
-      try { sourceNodeRef.current.disconnect(); } catch (e) {}
+      try {
+        sourceNodeRef.current.disconnect();
+      } catch (err) {
+        console.warn('[useGroupCallAudioProcessing] Source disconnect failed:', err?.message || err);
+      }
       sourceNodeRef.current = null;
     }
     if (audioContextRef.current) {
-      try { audioContextRef.current.close(); } catch (e) {}
+      try {
+        audioContextRef.current.close();
+      } catch (err) {
+        console.warn('[useGroupCallAudioProcessing] Audio context close failed:', err?.message || err);
+      }
       audioContextRef.current = null;
     }
   };
@@ -178,7 +221,7 @@ const useGroupCallAudioProcessing = (
 
   const _sendAudioForRecognition = (audioData) => {
     try {
-      if (isMuted || !socket?.connected) return;
+      if (isMutedRef.current || !socket?.connected) return;
 
       const requestId = `group-${Date.now()}`;
       const metric = performanceMetrics.startTracking(requestId);
@@ -189,8 +232,8 @@ const useGroupCallAudioProcessing = (
 
       socket.emit('groupCallRecognizeSpeech', {
         audio: wavBuffer,
-        sourceLanguage: currentLanguage,
-        callRoomId,
+        sourceLanguage: currentLanguageRef.current,
+        callRoomId: callRoomIdRef.current,
         requestId,
       });
 
@@ -252,6 +295,9 @@ const useGroupCallAudioProcessing = (
       socket.off('groupCallError', handleError);
       cleanup?.();
     };
+    // TTS queue functions operate through refs, so listener registration only
+    // follows socket, language mode, and room changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [socket, currentLanguage, callRoomId, useLiveKitAudioTracks]);
 
   // ── TTS sequential playback queue ────────────────────────────────────────
@@ -288,7 +334,14 @@ const useGroupCallAudioProcessing = (
   const _stopTts = () => {
     ttsQueueRef.current = [];
     const el = currentAudioElRef.current;
-    if (el) { try { el.pause(); el.src = ''; } catch (e) {} }
+    if (el) {
+      try {
+        el.pause();
+        el.src = '';
+      } catch (err) {
+        console.warn('[useGroupCallAudioProcessing] TTS stop failed:', err?.message || err);
+      }
+    }
     currentAudioElRef.current = null;
     isPlayingRef.current = false;
   };

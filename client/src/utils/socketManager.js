@@ -40,7 +40,7 @@ class SocketManager {
     }
 
     const transportOptions = this.useWebSocket 
-      ? ['polling', 'websocket']
+      ? ['websocket', 'polling']
       : ['polling'];
     
     const socketOptions = {
@@ -94,11 +94,12 @@ class SocketManager {
     this.socket.on('connect_error', (error) => {
       console.error('Socket connection error:', error);
       this.attemptCount++;
-      
-      if (this.attemptCount >= 3 && this.useWebSocket) {
-        console.log('Switching to polling-only mode');
-        this.useWebSocket = false;
-        this.connect();
+
+      // Keep a WebSocket-first strategy. Socket.IO can still fall back to
+      // polling because both transports are enabled, so avoid forcing a full
+      // reconnect into polling-only mode after transient errors.
+      if (this.attemptCount === 3 && this.useWebSocket) {
+        console.warn('Repeated connect errors; keeping websocket-first with polling fallback enabled');
       }
     });
 

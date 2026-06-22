@@ -33,6 +33,12 @@ const SAMPLE_RATE = 16000;
 const NUM_CHANNELS = 1;
 const SAMPLES_PER_FRAME = 480; // 30ms at 16kHz — standard WebRTC frame
 const BYTES_PER_FRAME = SAMPLES_PER_FRAME * 2; // Int16 = 2 bytes
+const DEFAULT_MAX_QUEUE_BYTES = SAMPLE_RATE * NUM_CHANNELS * 2 * 2; // 2s of 16kHz mono PCM
+const MAX_QUEUE_BYTES = parseInt(
+  process.env.TRANSLATION_WORKER_MAX_QUEUE_BYTES || String(DEFAULT_MAX_QUEUE_BYTES),
+  10
+);
+const DROP_LOG_INTERVAL_MS = 5000;
 
 /**
  * LanguageTrackContext
@@ -44,11 +50,18 @@ class LanguageTrackContext {
     this.lang = lang;
     this.source = source;
     this._queue = [];
+    this._queueBytes = 0;
     this._draining = false;
+    this._droppedBytes = 0;
+    this._lastDropLogAt = 0;
   }
 
   enqueue(pcmBuffer) {
-    this._queue.push(pcmBuffer);
+    const buffer = this._fitQueueBudget(pcmBuffer);
+    if (!buffer || buffer.length === 0) return;
+
+    this._queue.push(buffer);
+    this._queueBytes += buffer.length;
     if (!this._draining) this._drain();
   }
 
@@ -56,9 +69,39 @@ class LanguageTrackContext {
     this._draining = true;
     while (this._queue.length > 0) {
       const buf = this._queue.shift();
+      this._queueBytes = Math.max(0, this._queueBytes - buf.length);
       await this._injectBuffer(buf);
     }
     this._draining = false;
+  }
+
+  _fitQueueBudget(pcmBuffer) {
+    if (!Buffer.isBuffer(pcmBuffer) || pcmBuffer.length === 0) return null;
+    if (!Number.isFinite(MAX_QUEUE_BYTES) || MAX_QUEUE_BYTES <= 0) return pcmBuffer;
+
+    let buffer = pcmBuffer;
+    if (buffer.length > MAX_QUEUE_BYTES) {
+      this._recordDrop(buffer.length - MAX_QUEUE_BYTES);
+      buffer = buffer.subarray(buffer.length - MAX_QUEUE_BYTES);
+    }
+
+    while (this._queue.length > 0 && this._queueBytes + buffer.length > MAX_QUEUE_BYTES) {
+      const dropped = this._queue.shift();
+      this._queueBytes = Math.max(0, this._queueBytes - dropped.length);
+      this._recordDrop(dropped.length);
+    }
+
+    return buffer;
+  }
+
+  _recordDrop(byteCount) {
+    this._droppedBytes += byteCount;
+    const now = Date.now();
+    if (now - this._lastDropLogAt < DROP_LOG_INTERVAL_MS) return;
+    this._lastDropLogAt = now;
+    console.warn(
+      `[LanguageTrackContext:${this.lang}] Dropped stale translation PCM (${this._droppedBytes} bytes total) to keep latency bounded`
+    );
   }
 
   async _injectBuffer(pcmBuffer) {

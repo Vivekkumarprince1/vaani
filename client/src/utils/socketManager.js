@@ -43,8 +43,12 @@ class SocketManager {
       ? ['websocket', 'polling']
       : ['polling'];
     
+    const preferredLang = (typeof window !== 'undefined' && (localStorage.getItem('preferredLanguage') || localStorage.getItem('userLanguage'))) || 'en';
     const socketOptions = {
-      auth: { token: this.token },
+      auth: { 
+        token: this.token,
+        preferredLanguage: preferredLang
+      },
       path: '/socket.io',
       reconnection: true,
       reconnectionAttempts: this.maxAttempts,

@@ -292,75 +292,45 @@ const { translateSpeechDirect } = require('./speechTranslationSDK');
 //  * @param {string} sourceLanguage - Source language code
 //  * @returns {Promise<string>} - Recognized text
 //  */
+const sttService = require('../providers/sttService');
+const translationService = require('../providers/translationService');
+
 /**
- * Recognize speech (voice-to-text) using the optimized Speech Translation SDK
- * Falls back to returning empty string on error
+ * Recognize speech (voice-to-text) using the universal STT dispatcher
+ * (Azure, Groq Whisper, OpenAI Whisper, Deepgram, NVIDIA)
  */
 const recognizeSpeech = async (audioBuffer, sourceLanguage) => {
 	try {
 		if (!audioBuffer) return '';
-		// Use translateSpeechDirect with same source and target to get original transcription
-		const src = sourceLanguage || 'en';
-		try {
-			const result = await translateSpeechDirect(audioBuffer, src, src);
-			return (result && result.original) ? result.original : '';
-		} catch (err) {
-			console.warn('translateSpeechDirect failed in recognizeSpeech, falling back:', err && err.message);
-			return '';
-		}
+		return await sttService.recognizeSpeech({ audioBuffer, language: sourceLanguage });
 	} catch (error) {
-		console.error('Speech recognition error:', error);
+		console.error('Speech recognition error:', error && error.message);
 		return '';
 	}
 };
 
-// /**
-//  * ✅ USED IN YOUR WORKFLOW - Translate text only (no audio)
-//  * This is part of your workflow: Speech Recognition → Text Translation → Text Display
-//  * 
-//  * @param {string} text - Text to translate
-//  * @param {string} sourceLanguage - Source language code
-//  * @param {string} targetLanguage - Target language code
-//  * @returns {Promise<string>} - Translated text
-//  */
 /**
- * Translate text using Azure Translator REST API if configured.
- * Falls back to returning original text when translator not configured.
+ * Translate text using universal translation service
+ * (Azure, Groq, OpenRouter, NVIDIA, OpenAI, Google Translate NMT)
  */
 const translateTextOnly = async (text, sourceLanguage, targetLanguage) => {
 	try {
 		if (!text || !text.trim()) return '';
 
-		const TRANSLATOR_KEY = process.env.AZURE_TRANSLATOR_KEY;
-		const TRANSLATOR_REGION = process.env.AZURE_TRANSLATOR_REGION;
-		const TRANSLATOR_ENDPOINT = process.env.AZURE_TRANSLATOR_ENDPOINT || 'https://api.cognitive.microsofttranslator.com';
-
 		const sourceCode = sourceLanguage ? sourceLanguage.split('-')[0] : undefined;
 		const targetCode = targetLanguage ? targetLanguage.split('-')[0] : undefined;
 
-		if (!TRANSLATOR_KEY || !targetCode) {
-			// No translator configured or target not provided — return original text
+		if (!targetCode || (sourceCode && sourceCode === targetCode)) {
 			return text;
 		}
 
-		const url = `${TRANSLATOR_ENDPOINT}/translate`;
-		const params = {
-			'api-version': '3.0',
-			to: targetCode
-		};
-		if (sourceCode) params.from = sourceCode;
-
-		const response = await axios.post(url, [{ Text: text }], {
-			params,
-			headers: {
-				'Ocp-Apim-Subscription-Key': TRANSLATOR_KEY,
-				'Ocp-Apim-Subscription-Region': TRANSLATOR_REGION || '',
-				'Content-Type': 'application/json'
-			},
-			timeout: 4000
+		const results = await translationService.translateBatch({
+			texts: [text],
+			sourceLang: sourceCode,
+			targetLang: targetCode
 		});
 
-		const translated = (response.data && response.data[0] && response.data[0].translations && response.data[0].translations[0] && response.data[0].translations[0].text) || '';
+		const translated = results?.[0]?.text;
 		return translated || text;
 	} catch (error) {
 		console.error('Text translation error:', error && error.message);

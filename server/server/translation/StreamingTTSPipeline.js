@@ -71,9 +71,34 @@ const escapeXml = (str) =>
 async function synthesizeStreaming({ text, lang, onChunk, timeoutMs = 15000 }) {
   if (!text?.trim()) throw new Error('[StreamingTTSPipeline] Empty text');
 
-  const SPEECH_KEY = config.AZURE_SPEECH_KEY;
-  const SPEECH_REGION = config.AZURE_SPEECH_REGION;
+  let SPEECH_KEY = config.AZURE_SPEECH_KEY;
+  let SPEECH_REGION = config.AZURE_SPEECH_REGION;
+
+  try {
+    const providerManager = require('../providers/providerManager');
+    const tts = providerManager.getActiveProvider ? providerManager.getActiveProvider('tts') : null;
+    if (tts?.config?.apiKey) SPEECH_KEY = tts.config.apiKey.trim();
+    if (tts?.config?.region) SPEECH_REGION = tts.config.region.trim().toLowerCase();
+  } catch (e) {}
+
   if (!SPEECH_KEY || !SPEECH_REGION) {
+    // Graceful fallback to modular / universal TTS (Google Universal, ElevenLabs, OpenAI)
+    try {
+      const sharedCache = require('./SharedTranslationCache');
+      const audioBuffer = await sharedCache.getOrSynthesize(text, lang);
+      if (audioBuffer && audioBuffer.length > 0) {
+        // If it starts with 'RIFF' (WAV), skip standard 44-byte header
+        const isWav = audioBuffer.length > 44 && audioBuffer.toString('ascii', 0, 4) === 'RIFF';
+        const pcm = isWav ? audioBuffer.subarray(44) : audioBuffer;
+        const chunkSize = 960; // 30ms frame at 16kHz
+        for (let i = 0; i < pcm.length; i += chunkSize) {
+          onChunk(pcm.subarray(i, Math.min(i + chunkSize, pcm.length)));
+        }
+        return { totalBytes: pcm.length, voiceName: 'modular-fallback' };
+      }
+    } catch (fallbackErr) {
+      throw new Error(`[StreamingTTSPipeline] Modular TTS fallback failed: ${fallbackErr.message}`);
+    }
     throw new Error('[StreamingTTSPipeline] Azure Speech credentials not configured');
   }
 

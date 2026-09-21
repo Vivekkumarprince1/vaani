@@ -112,27 +112,32 @@ export const TranslationProvider = ({ children }) => {
 
   // Sync language with socket when it connects or currentLanguage changes
   useEffect(() => {
+    let cleanup = null;
     const syncWithSocket = async () => {
       try {
         const socketManager = (await import('../utils/socketManager')).default;
         if (socketManager.socket?.connected) {
           socketManager.emit('updateLanguagePreference', { language: currentLanguage });
           console.log('📡 Auto-synced language preference with server:', currentLanguage);
-        } else if (socketManager.socket) {
-          // If not connected yet, wait for connect event
-          const onConnect = () => {
-            socketManager.emit('updateLanguagePreference', { language: currentLanguage });
-            console.log('📡 Synced language preference on connect:', currentLanguage);
-            socketManager.off('connect', onConnect);
-          };
-          socketManager.on('connect', onConnect);
         }
+
+        const onConnect = () => {
+          socketManager.emit('updateLanguagePreference', { language: currentLanguage });
+          console.log('📡 Synced language preference on connect:', currentLanguage);
+        };
+        socketManager.on('connect', onConnect);
+        cleanup = () => {
+          socketManager.off('connect', onConnect);
+        };
       } catch (err) {
         console.warn('Could not sync language with socket:', err);
       }
     };
 
     syncWithSocket();
+    return () => {
+      if (cleanup) cleanup();
+    };
   }, [currentLanguage]);
 
   // Prefetch a lightweight language artifact (if backend exposes it) to speed up local work

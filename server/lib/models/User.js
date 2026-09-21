@@ -36,7 +36,17 @@ const userSchema = new mongoose.Schema({
   contacts: [{
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User'
-  }]
+  }],
+  role: {
+    type: String,
+    enum: ['user', 'admin', 'superadmin'],
+    default: 'user',
+    index: true
+  },
+  isActive: {
+    type: Boolean,
+    default: true
+  }
 }, { timestamps: true });
 
 const User = mongoose.models.User || mongoose.model('User', userSchema);

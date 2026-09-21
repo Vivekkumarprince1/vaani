@@ -129,20 +129,6 @@ const Dashboard = () => {
   const peerConnectionRef = useRef(null);
   const initiatorOfferSentRef = useRef(new Set()); // track callSessionIds we've sent offers for
 
-  // 1. Initialize Socket.IO when authenticated
-  // Check authentication
-  useEffect(() => {
-    const token = localStorage.getItem('token');
-    if (isAuthenticated && token) {
-      console.log('[Dashboard] Initializing socket connection');
-      socketManager.initialize(token);
-    }
-
-    return () => {
-      // Only cleanup on unmount, not on every re-render
-      // unless we want to disconnect when auth is lost
-    };
-  }, [isAuthenticated]); 
 
   // Cleanup on unmount
   useEffect(() => {
@@ -212,7 +198,8 @@ const Dashboard = () => {
         name: u.username,
         avatar: u.username?.[0]?.toUpperCase() || 'U',
         status: u.status || 'offline',
-        lastSeen: u.lastActive
+        lastSeen: u.lastActive,
+        preferredLanguage: u.preferredLanguage || 'en'
       }));
 
       setUsers(transformedUsers);
@@ -568,69 +555,34 @@ const Dashboard = () => {
         const selUser = selectedUserRef.current;
         const selRoom = selectedRoomRef.current;
 
-        // Debug: Log what we're comparing
-        const senderIdFromMsg = msg.sender?._id || msg.sender?.id || msg.sender;
-        const selectedUserId = selUser?.id || selUser?._id;
+        const currentUserId = (userRef.current?._id || userRef.current?.id)?.toString();
+        const senderIdFromMsg = (msg.sender?._id || msg.sender?.id || msg.sender)?.toString();
+        const selectedUserId = (selUser?._id || selUser?.id)?.toString();
+        const receiverIdFromMsg = (msg.receiver?._id || msg.receiver?.id || msg.receiver || msg.receiverId)?.toString();
+        const isSelfMessage = Boolean(currentUserId && senderIdFromMsg === currentUserId);
 
-        console.log(`    Message details:`, {
-          senderFromMsg: senderIdFromMsg,
-          senderFullObj: msg.sender,
-          selectedUser: {
-            id: selUser?.id,
-            _id: selUser?._id,
-            name: selUser?.name
-          },
-          room: {
-            msgRoom: msg.room || msg.roomId,
-            selectedRoom: selRoom?._id
-          },
-          clientTempId: msg.clientTempId
-        });
-
-        // Determine whether this message should be appended to the current view
-        // For sender's own messages: check if RECEIVER matches selected user
-        // For incoming messages: check if SENDER matches selected user
-        const currentUserId = userRef.current?._id || userRef.current?.id;
-        const isSelfMessage = senderIdFromMsg === currentUserId?.toString() || senderIdFromMsg === currentUserId;
-
-        const receiverIdFromMsg = msg.receiver?._id || msg.receiver || msg.receiverId;
-
-        const isSenderMatch = selUser && (
-          senderIdFromMsg === selectedUserId ||
-          senderIdFromMsg === selUser.id ||
-          senderIdFromMsg === selUser._id ||
-          senderIdFromMsg?.toString() === selectedUserId?.toString()
-        );
-
-        const isReceiverMatch = selUser && receiverIdFromMsg && (
-          receiverIdFromMsg === selectedUserId ||
-          receiverIdFromMsg === selUser.id ||
-          receiverIdFromMsg === selUser._id ||
-          receiverIdFromMsg?.toString() === selectedUserId?.toString()
-        );
-
-        const isRoomMatch = selRoom && (msg.room === selRoom._id || msg.roomId === selRoom._id);
+        const isSenderMatch = Boolean(selectedUserId && senderIdFromMsg === selectedUserId);
+        const isReceiverMatch = Boolean(selectedUserId && receiverIdFromMsg === selectedUserId);
+        const selRoomId = (selRoom?._id || selRoom?.id)?.toString();
+        const isRoomMatch = Boolean(selRoomId && (
+          (msg.room?._id || msg.room)?.toString() === selRoomId ||
+          (msg.roomId?._id || msg.roomId)?.toString() === selRoomId
+        ));
 
         // If it's my own message, check receiver matches. If it's incoming, check sender matches
         const shouldAppend = (isSelfMessage && isReceiverMatch) || (!isSelfMessage && isSenderMatch) || isRoomMatch;
-        
-        console.log(`   ✅ Should append: ${shouldAppend} (isSelf: ${isSelfMessage}, senderMatch: ${isSenderMatch}, receiverMatch: ${isReceiverMatch}, roomMatch: ${isRoomMatch})`);
 
         if (!shouldAppend) {
-          console.log(`   ⏭️ Skipping - message not relevant to current view (selUser: ${selUser?.name}, selRoom: ${selRoom?.name})`);
-
           // If message is not for current view but is for this user, refresh unread counts
           if (!isSelfMessage) {
             fetchUnreadCounts();
 
-            // Show browser notification for new message if:
-            // 1. Not sent by current user
-            // 2. Window is not focused OR message is not in current chat
-            if (document.hidden || !shouldAppend) {
+            // Show browser notification for new message
+            if (document.hidden) {
               const senderInfo = typeof msg.sender === 'object' ? msg.sender : null;
               const senderName = senderInfo?.username || senderInfo?.name || 'Someone';
               const isGroupMsg = Boolean(msg.room || msg.roomId);
-              const roomInfo = isGroupMsg ? roomsRef.current?.find(r => r._id === (msg.room || msg.roomId)) : null;
+              const roomInfo = isGroupMsg ? roomsRef.current?.find(r => (r._id || r.id)?.toString() === (msg.room || msg.roomId)?.toString()) : null;
 
               notificationManager.showMessageNotification({
                 senderName: senderName,
@@ -640,13 +592,11 @@ const Dashboard = () => {
                 messageId: msg._id || msg.id,
                 timestamp: msg.timestamp
               }, () => {
-                // On click: focus window and select the appropriate chat
                 window.focus();
                 if (isGroupMsg && roomInfo) {
                   selectRoom(roomInfo);
                 } else if (senderInfo) {
-                  // Find the user in the users list and select
-                  const sender = users.find(u => u.id === (senderInfo._id || senderInfo.id));
+                  const sender = users.find(u => (u._id || u.id)?.toString() === (senderInfo._id || senderInfo.id)?.toString());
                   if (sender) {
                     selectUser(sender);
                   }
@@ -654,76 +604,34 @@ const Dashboard = () => {
               });
             }
           }
-
           return;
         }
 
+        // 1. Immediately append or replace optimistic message (0ms latency, no blocking)
+        setMessages(prev => {
+          const persistedId = msg._id || msg.id || `${msg.timestamp}-${senderIdFromMsg}`;
+          if (prev.some(m => (m._id || m.id) === persistedId)) return prev;
+
+          // If we have an optimistic message with clientTempId, replace it
+          if (msg.clientTempId) {
+            const idx = prev.findIndex(m => (m._id === msg.clientTempId) || (m.id === msg.clientTempId) || (m.clientTempId === msg.clientTempId));
+            if (idx !== -1) {
+              const copy = prev.slice();
+              copy[idx] = { ...prev[idx], ...msg, status: 'sent' };
+              return copy;
+            }
+          }
+          return [...prev, msg];
+        });
+
+        // 2. Acknowledge delivery to server immediately
         try {
-          // Translate incoming message into the user's preferred language before appending
-          const translatedContent = await translateText(msg.content, currentLanguageRef.current, null);
-          // Attach translated content so MessageSection will display the preferred language immediately
-          const msgWithTranslated = { ...msg, content: translatedContent, _originalContent: msg.content };
-          setMessages(prev => {
-            const persistedId = msgWithTranslated._id || msgWithTranslated.id || `${msgWithTranslated.timestamp}-${msgWithTranslated.sender}`;
-            if (prev.some(m => (m._id || m.id) === persistedId)) return prev;
-            console.log(`   🔍 Looking for existing message with id: ${persistedId}`);
-            // If already present by persisted id, do nothing
-            if (prev.some(m => (m._id || m.id) === persistedId)) {
-              console.log(`   ℹ️ Message already present by persisted id, skipping`);
-              return prev;
-            }
-            // If we have an optimistic message with clientTempId, replace it
-            if (msgWithTranslated.clientTempId) {
-              console.log(`   🔍 Looking for optimistic message with clientTempId: ${msgWithTranslated.clientTempId}`);
-              const idx = prev.findIndex(m => (m._id === msgWithTranslated.clientTempId) || (m.id === msgWithTranslated.clientTempId));
-              if (idx !== -1) {
-                console.log(`   ✅ FOUND optimistic message at index ${idx}, replacing with persisted message`);
-                const copy = prev.slice();
-                copy[idx] = msgWithTranslated;
-                return copy;
-              } else {
-                console.log(`   ⚠️ No optimistic message found with clientTempId`);
-              }
-            }
-            console.log(`   ➕ Appending new message`);
-            return [...prev, msgWithTranslated];
-          });
-          // Acknowledge delivery to server when this client (recipient) receives the message
-          try {
-            const messageId = msg._id || msg.id || null;
-            const isFromOther = !(msg.sender && ((msg.sender._id && msg.sender._id === (userRef.current?._id || userRef.current?.id)) || (msg.sender === (userRef.current?._id || userRef.current?.id))));
-            if (messageId && isFromOther) {
-              console.log(`📨 [Dashboard] Emitting messageDelivered for messageId=${messageId}`);
-              socketManager.emit('messageDelivered', { messageId, clientTempId: msg.clientTempId || null });
-            }
-          } catch (e) {
-            console.error('❌ [Dashboard] Error emitting messageDelivered:', e);
+          const messageId = msg._id || msg.id || null;
+          if (messageId && !isSelfMessage) {
+            socketManager.emit('messageDelivered', { messageId, clientTempId: msg.clientTempId || null });
           }
-        } catch (err) {
-          console.warn('Translation on receive failed, appending original message:', err);
-          setMessages(prev => {
-            const persistedId = msg._id || msg.id || `${msg.timestamp}-${msg.sender}`;
-            if (prev.some(m => (m._id || m.id) === persistedId)) return prev;
-            if (msg.clientTempId) {
-              const idx = prev.findIndex(m => (m._id === msg.clientTempId) || (m.id === msg.clientTempId));
-              if (idx !== -1) {
-                const copy = prev.slice();
-                copy[idx] = msg;
-                return copy;
-              }
-            }
-            return [...prev, msg];
-          });
-          // Acknowledge delivery in fallback path as well
-          try {
-            const messageId = msg._id || msg.id || null;
-            const isFromOther = !(msg.sender && ((msg.sender._id && msg.sender._id === (userRef.current?._id || userRef.current?.id)) || (msg.sender === (userRef.current?._id || userRef.current?.id))));
-            if (messageId && isFromOther) {
-              socketManager.emit('messageDelivered', { messageId, clientTempId: msg.clientTempId || null });
-            }
-          } catch (e) {
-            // ignore
-          }
+        } catch (e) {
+          console.error('❌ [Dashboard] Error emitting messageDelivered:', e);
         }
       });
 
@@ -793,11 +701,30 @@ const Dashboard = () => {
       socketManager.on('userStatusChange', (data) => {
         setUsers(prevUsers =>
           prevUsers.map(u =>
-            u.id === data.userId
+            (u.id === data.userId || u._id === data.userId)
               ? { ...u, status: data.status }
               : u
           )
         );
+      });
+
+      // Listen for user language preference changes
+      socketManager.on('userLanguageChanged', (data) => {
+        if (!data || !data.userId) return;
+        const targetId = String(data.userId);
+        setUsers(prevUsers =>
+          prevUsers.map(u =>
+            (String(u.id) === targetId || String(u._id) === targetId)
+              ? { ...u, preferredLanguage: data.preferredLanguage }
+              : u
+          )
+        );
+        setSelectedUser(prevSelected => {
+          if (prevSelected && (String(prevSelected.id) === targetId || String(prevSelected._id) === targetId)) {
+            return { ...prevSelected, preferredLanguage: data.preferredLanguage };
+          }
+          return prevSelected;
+        });
       });
 
       // Listen for room updates (members added/removed, metadata changed)
@@ -980,9 +907,6 @@ const Dashboard = () => {
         },
         onTranslationPlaybackStateChange: (isPlaying) => {
           setIsRemoteAudioDucked(Boolean(isPlaying));
-          if (remoteVideoRef.current) {
-            remoteVideoRef.current.volume = isPlaying ? 0.25 : 1;
-          }
         }
       });
 
@@ -1076,6 +1000,7 @@ const Dashboard = () => {
         socketManager.off('messageStatusUpdate');
         socketManager.off('userTyping');
         socketManager.off('userStatusChange');
+        socketManager.off('userLanguageChanged');
         socketManager.off('roomUpdated');
         socketManager.off('roomCreated');
         socketManager.off('groupCallIncoming', handleGroupCallIncoming);
@@ -1317,8 +1242,24 @@ const Dashboard = () => {
   };
 
   // Send message
-  const sendMessage = async ({ content, media }) => {
+  const sendMessage = async (payloadOrContent) => {
+    let content = '';
+    let media = null;
+    if (typeof payloadOrContent === 'string') {
+      content = payloadOrContent;
+    } else if (payloadOrContent && typeof payloadOrContent === 'object') {
+      content = payloadOrContent.content || '';
+      media = payloadOrContent.media || null;
+    }
     if ((!content || !content.trim()) && !media) return;
+
+    const receiverId = selectedUser ? (selectedUser._id || selectedUser.id)?.toString() : null;
+    const roomId = selectedRoom ? (selectedRoom._id || selectedRoom.id)?.toString() : null;
+
+    if (!receiverId && !roomId) {
+      console.warn('Cannot send message: no selected user or room');
+      return;
+    }
 
     const clientTempId = `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
     const optimisticMessage = {
@@ -1330,9 +1271,10 @@ const Dashboard = () => {
       originalContent: content || '',
       timestamp: new Date().toISOString(),
       status: 'queued',
-      room: selectedRoom?._id || null,
-      receiver: selectedUser?.id || null,
-      isGroupMessage: Boolean(selectedRoom),
+      room: roomId,
+      receiver: receiverId ? { _id: receiverId } : null,
+      receiverId,
+      isGroupMessage: Boolean(roomId),
       media: media || null
     };
 
@@ -1345,7 +1287,7 @@ const Dashboard = () => {
         content: content || '',
         media: media || null,
         clientTempId,
-        ...(selectedUser ? { receiverId: selectedUser.id } : { roomId: selectedRoom._id })
+        ...(receiverId ? { receiverId } : { roomId })
       };
 
       // Save to database via API. 
@@ -1403,9 +1345,10 @@ const Dashboard = () => {
     const pc = new RTCPeerConnection({ iceServers: getIceServers() });
 
     pc.onicecandidate = (event) => {
-      if (event.candidate && selectedUser) {
+      const targetId = (selectedUser?._id || selectedUser?.id)?.toString();
+      if (event.candidate && targetId) {
         socketManager.emit('iceCandidate', {
-          to: selectedUser.id,
+          to: targetId,
           candidate: event.candidate
         });
       }
@@ -1487,8 +1430,9 @@ const Dashboard = () => {
       setIsRemoteAudioDucked(false);
 
       // Delegate to CallManager
-      const targetLang = selectedUser?.preferredLanguage || 'hi';
-      await callManager.startCall(selectedUser.id, type, stream, currentLanguage, targetLang);
+      const targetUserId = (selectedUser?._id || selectedUser?.id)?.toString();
+      const targetLang = selectedUser?.preferredLanguage || 'en';
+      await callManager.startCall(targetUserId, type, stream, currentLanguage, targetLang);
 
       console.log('✓ Call initiated via CallManager');
     } catch (err) {

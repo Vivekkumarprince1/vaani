@@ -35,9 +35,14 @@ process.on('unhandledRejection', (reason, promise) => {
   // Don't exit for unhandled rejections - log and continue
 });
 
-// Validate Azure env and expose TTS availability
+// Validate environment and expose TTS availability
 const { config: envConfig } = require('./server/utils/env');
-const ttsAvailable = Boolean(envConfig.AZURE_SPEECH_KEY && envConfig.AZURE_SPEECH_REGION);
+const ttsAvailable = Boolean(
+  (envConfig.AZURE_SPEECH_KEY && envConfig.AZURE_SPEECH_REGION) ||
+  process.env.ELEVENLABS_API_KEY ||
+  process.env.OPENAI_API_KEY ||
+  process.env.NVIDIA_API_KEY
+);
 global.__TTS_AVAILABLE = ttsAvailable;
 
 const port = parseInt(process.env.PORT || '3001', 10); // Different port for backend
@@ -72,22 +77,18 @@ if (likelyMultiInstance) {
   }
 }
 
-// ✅ VALIDATION: Azure services
-console.log('\n🔑 Azure Configuration:');
-console.log('  AZURE_SPEECH_KEY:', envConfig.AZURE_SPEECH_KEY ? '✅ Loaded' : '❌ Missing');
-console.log('  AZURE_SPEECH_REGION:', envConfig.AZURE_SPEECH_REGION ? '✅ Loaded' : '❌ Missing');
-console.log('  AZURE_TRANSLATOR_KEY:', envConfig.AZURE_TRANSLATOR_KEY ? '✅ Loaded' : '❌ Missing');
-console.log('  AZURE_TRANSLATOR_REGION:', envConfig.AZURE_TRANSLATOR_REGION ? '✅ Loaded' : '❌ Missing');
+// ✅ VALIDATION: Service credentials & Modular support
+console.log('\n🔑 Core Configuration:');
+console.log('  AZURE_SPEECH:', (envConfig.AZURE_SPEECH_KEY && envConfig.AZURE_SPEECH_REGION) ? '✅ Loaded' : 'ℹ️  Not set (Modular STT/TTS dynamically managed)');
+console.log('  AZURE_TRANSLATOR:', envConfig.AZURE_TRANSLATOR_KEY ? '✅ Loaded' : 'ℹ️  Not set (Modular LLM translation dynamically managed)');
 console.log('  JWT_SECRET:', envConfig.JWT_SECRET ? '✅ Loaded' : '❌ Missing');
 console.log('  LIVEKIT_URL:', envConfig.LIVEKIT_URL ? '✅ Loaded' : '❌ Missing (SFU disabled)');
 console.log('  LIVEKIT_API_KEY:', envConfig.LIVEKIT_API_KEY ? '✅ Loaded' : '❌ Missing (SFU disabled)');
 
 if (!ttsAvailable) {
-  console.warn('\n⚠️ Text-to-Speech DEGRADATION: TTS unavailable.');
-  console.warn('   Group-call translations will be text-only (no audio output).');
-  console.warn('   Set AZURE_SPEECH_KEY and AZURE_SPEECH_REGION to enable.');
+  console.log('ℹ️  Text-to-Speech: Managed dynamically via ProviderManager (NVIDIA / ElevenLabs / OpenAI / Azure).');
 } else {
-  console.log('\n✅ Text-to-Speech available — translated audio enabled for group calls.');
+  console.log('✅ Text-to-Speech available — translated audio enabled for calls.');
 }
 
 const livekitConfigured = Boolean(envConfig.LIVEKIT_URL && envConfig.LIVEKIT_API_KEY && envConfig.LIVEKIT_API_SECRET);
@@ -140,6 +141,9 @@ app.use('/api', uploadRoutes);
 
 const livekitRoutes = require('./routes/livekit');
 app.use('/api/livekit', livekitRoutes);
+
+const adminRoutes = require('./routes/admin');
+app.use('/api/admin', adminRoutes);
 
 const server = createServer(app);
 
@@ -302,6 +306,45 @@ async function startServer() {
     console.log('🔄 Connecting to MongoDB...');
     await connectDB();
     console.log('✅ MongoDB connected successfully');
+
+    // Initialize ProviderManager (dynamic providers & key management)
+    const providerManager = require('./server/providers/providerManager');
+    await providerManager.initialize();
+
+    const activeTts = providerManager.getActiveProvider ? providerManager.getActiveProvider('tts') : null;
+    if (activeTts?.isConfigured || activeTts?.config?.apiKey) {
+      global.__TTS_AVAILABLE = true;
+      if (global.__FEATURES) global.__FEATURES.TTS_AVAILABLE = true;
+    }
+
+    // Auto-bootstrap superadmin if configured in environment
+    const superadminMobile = process.env.SUPERADMIN_MOBILE;
+    if (superadminMobile) {
+      const User = require('./lib/models/User');
+      const bcrypt = require('bcryptjs');
+      const existing = await User.findOne({ mobileNumber: superadminMobile });
+      if (existing) {
+        if (existing.role !== 'superadmin') {
+          existing.role = 'superadmin';
+          existing.isActive = true;
+          await existing.save();
+          console.log(`👑 User with mobile ${superadminMobile} auto-promoted to superadmin.`);
+        }
+      } else {
+        const superadminPassword = process.env.SUPERADMIN_PASSWORD || 'Admin@12345';
+        const superadminUsername = process.env.SUPERADMIN_USERNAME || 'superadmin';
+        const hashedPassword = await bcrypt.hash(superadminPassword, 10);
+        await User.create({
+          username: superadminUsername,
+          mobileNumber: superadminMobile,
+          password: hashedPassword,
+          role: 'superadmin',
+          isActive: true,
+          preferredLanguage: 'en'
+        });
+        console.log(`👑 Initial superadmin account created (${superadminUsername} - ${superadminMobile}).`);
+      }
+    }
   } catch (err) {
     console.error('❌ Failed to connect to MongoDB during startup. Exiting.');
     console.error(err && err.message ? err.message : err);

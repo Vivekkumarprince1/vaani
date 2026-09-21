@@ -47,48 +47,19 @@ class TranslateController {
         }
       }
 
-      // Validate Azure credentials
-      if (!process.env.AZURE_TRANSLATOR_KEY || !process.env.AZURE_TRANSLATOR_ENDPOINT) {
-        console.error('❌ Azure Translator credentials not configured');
-        return res.status(500).json({ error: 'Translation service not configured' });
-      }
-
+      const { translateBatch } = require('../server/providers/translationService');
+      
       console.log(`💬 Translating ${validTexts.length} chat message(s):`, {
         sample: validTexts[0]?.substring(0, 50) + (validTexts[0]?.length > 50 ? '...' : ''),
         from: sourceLang || 'auto-detect',
         to: targetLang
       });
 
-      // Call Azure Translator API with batch support
-      const url = `${process.env.AZURE_TRANSLATOR_ENDPOINT}/translate`;
-      const params = {
-        'api-version': '3.0',
-        'to': targetLang
-      };
-
-      // Add source language if provided
-      if (sourceLang) {
-        params.from = sourceLang;
-      }
-
-      const response = await axios({
-        method: 'post',
-        url: url,
-        params: params,
-        headers: {
-          'Ocp-Apim-Subscription-Key': process.env.AZURE_TRANSLATOR_KEY,
-          'Ocp-Apim-Subscription-Region': process.env.AZURE_TRANSLATOR_REGION,
-          'Content-Type': 'application/json',
-          'X-ClientTraceId': uuidv4()
-        },
-        data: validTexts.map(text => ({ text }))
+      const translations = await translateBatch({
+        texts: validTexts,
+        sourceLang,
+        targetLang
       });
-
-      // Handle batch response
-      const translations = response.data.map((item, index) => ({
-        text: item.translations[0].text,
-        detectedLanguage: item.detectedLanguage?.language
-      }));
 
       // Store any uncached translations into cache
       try {

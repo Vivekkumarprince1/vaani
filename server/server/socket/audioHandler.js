@@ -524,8 +524,6 @@ const handleAudioTranslation = (io, socket, users, userIdToSocketId) => {
   socket.on('startTranslationStream', async (data) => {
     try {
       const { sourceLanguage, targetLanguage, userId, requestId } = data;
-      console.log(`🚀 [STREAM] Starting 1:1 translation stream: ${sourceLanguage} -> ${targetLanguage} (User: ${userId})`);
-
       const receiver = await resolveReceiver(userId, users, userIdToSocketId);
       if (!receiver.online) {
         console.error('Receiver not found:', userId);
@@ -534,12 +532,15 @@ const handleAudioTranslation = (io, socket, users, userIdToSocketId) => {
         return;
       }
 
+      const effectiveTargetLang = receiver.preferredLanguage || targetLanguage || 'en';
+      console.log(`🚀 [STREAM] Starting 1:1 translation stream: ${sourceLanguage} -> ${effectiveTargetLang} (User: ${userId})`);
+
       await oneToOneSessionManager.startSession({
         io,
         socket,
         receiverUserId: userId,
         sourceLanguage,
-        targetLanguage: receiver.preferredLanguage || targetLanguage || 'en',
+        targetLanguage: effectiveTargetLang,
         requestId,
       });
     } catch (err) {

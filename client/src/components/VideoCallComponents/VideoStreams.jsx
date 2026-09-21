@@ -1,11 +1,9 @@
-
-import React, { useEffect } from 'react';
-import TranslationOverlay from './TranslationOverlay';
-import TranscriptOverlay from './TranscriptOverlay';
+import React, { useEffect, useRef } from 'react';
+import CallSubtitlesOverlay from './CallSubtitlesOverlay';
 
 /**
  * Component to display local and remote video streams during calls
- * Displays simple overlays for transcripts/translations — avoids client-side TTS
+ * Features smooth audio ducking and broadcast-grade floating live captions
  */
 const VideoStreams = ({ 
   localVideoRef, 
@@ -18,8 +16,13 @@ const VideoStreams = ({
   remoteTranslated = '',
   yourLanguage = 'en',
   yourLanguageName = 'Your Language',
-  muteRemoteAudio = false
+  remoteUserName = 'Remote Caller',
+  isRemoteAudioDucked = false,
+  duckingMode = 'duck',
+  showCaptions = true
 }) => {
+  const duckIntervalRef = useRef(null);
+
   // Setup video streams when components receive new streams
   useEffect(() => {
     const setupVideo = async (ref, stream, isLocal) => {
@@ -34,7 +37,8 @@ const VideoStreams = ({
         
         // Set new stream
         ref.current.srcObject = stream;
-        ref.current.muted = isLocal || (!isLocal && muteRemoteAudio);
+        // Local is always muted to prevent self feedback echo
+        ref.current.muted = isLocal;
         ref.current.playsInline = true;
         ref.current.autoplay = true;
         
@@ -86,19 +90,62 @@ const VideoStreams = ({
       cleanupVideo(localVideoRef);
       cleanupVideo(remoteVideoRef);
     };
-  }, [localStream, remoteStream, localVideoRef, remoteVideoRef, muteRemoteAudio]);
+  }, [localStream, remoteStream, localVideoRef, remoteVideoRef]);
 
+  // Smooth Audio Ducking Engine
+  // Ramps remote video volume smoothly up/down to eliminate pops, echo, and voice collision
   useEffect(() => {
-    if (remoteVideoRef.current) {
-      remoteVideoRef.current.muted = muteRemoteAudio;
-      remoteVideoRef.current.volume = muteRemoteAudio ? 0 : 1;
+    const videoEl = remoteVideoRef.current;
+    if (!videoEl) return;
+
+    // Remote audio must not be hard-muted so ducking volume controls audible level
+    videoEl.muted = false;
+
+    let targetVolume = 1.0;
+    if (isRemoteAudioDucked) {
+      if (duckingMode === 'duck') {
+        targetVolume = 0.15; // 15% ducked volume for natural human inflection in background
+      } else if (duckingMode === 'mute') {
+        targetVolume = 0.0;  // 0% for pure translated audio only
+      } else {
+        targetVolume = 1.0;  // 100% for full dual audio
+      }
     }
-  }, [remoteVideoRef, muteRemoteAudio]);
+
+    if (duckIntervalRef.current) clearInterval(duckIntervalRef.current);
+
+    const stepTime = 15;
+    const totalSteps = 8;
+    let stepCount = 0;
+    const startVolume = typeof videoEl.volume === 'number' ? videoEl.volume : 1;
+    const volumeDelta = (targetVolume - startVolume) / totalSteps;
+
+    duckIntervalRef.current = setInterval(() => {
+      stepCount++;
+      if (stepCount >= totalSteps || !remoteVideoRef.current) {
+        if (remoteVideoRef.current) {
+          remoteVideoRef.current.volume = targetVolume;
+        }
+        clearInterval(duckIntervalRef.current);
+        duckIntervalRef.current = null;
+      } else {
+        const nextVol = Math.max(0, Math.min(1, startVolume + volumeDelta * stepCount));
+        remoteVideoRef.current.volume = nextVol;
+      }
+    }, stepTime);
+
+    return () => {
+      if (duckIntervalRef.current) {
+        clearInterval(duckIntervalRef.current);
+        duckIntervalRef.current = null;
+      }
+    };
+  }, [remoteVideoRef, isRemoteAudioDucked, duckingMode]);
 
   return (
     <>
-      {/* Remote Video with Transcription Overlay */}
-      <div className="flex-1 relative">
+      {/* Remote Video Container */}
+      <div className="flex-1 relative overflow-hidden bg-gray-950">
         <video
           ref={remoteVideoRef}
           playsInline
@@ -106,17 +153,23 @@ const VideoStreams = ({
           className="absolute inset-0 w-full h-full object-cover video-element"
           style={{ transform: 'scaleX(-1)' }}
         />
-        
-        {/* Remote Transcription Overlay - original + translated */}
-        {(remoteTranscript || remoteTranslated) && (
-          <div className="absolute bottom-4 left-4 right-4 animate-fade-in">
-            <TranslationOverlay transcribedText={remoteTranscript} translatedText={remoteTranslated || remoteTranscript} />
-          </div>
-        )}
+
+        {/* Studio-Grade Floating Live Captions & Translation Overlay */}
+        <CallSubtitlesOverlay
+          localTranscript={localTranscript}
+          localTranslated={localTranslated}
+          remoteTranscript={remoteTranscript}
+          remoteTranslated={remoteTranslated}
+          yourLanguage={yourLanguage}
+          yourLanguageName={yourLanguageName}
+          remoteUserName={remoteUserName}
+          isAudioDucked={isRemoteAudioDucked}
+          visible={showCaptions}
+        />
       </div>
 
-      {/* Local Video with Transcription Overlay */}
-      <div className="absolute top-4 right-4 w-48 h-36 bg-black rounded-lg overflow-hidden shadow-lg">
+      {/* Local Video Picture-in-Picture */}
+      <div className="absolute top-4 right-4 w-44 h-32 md:w-52 md:h-36 bg-black/80 border border-white/20 rounded-xl overflow-hidden shadow-2xl z-20 transition-all hover:scale-105">
         <video
           ref={localVideoRef}
           playsInline
@@ -125,23 +178,11 @@ const VideoStreams = ({
           style={{ transform: 'scaleX(-1)' }}
         />
         
-        {/* Local Transcription Overlay - original + translated (what they heard) */}
-        {(localTranscript || localTranslated) && (
-          <div className="absolute bottom-2 left-2 right-2 animate-fade-in">
-            <div 
-              className="bg-emerald-900/90 backdrop-blur-sm rounded-md px-2 py-1.5 shadow-lg"
-              style={{ fontSize: '11px' }}
-            >
-              <div className="text-[10px] text-emerald-300 font-medium mb-0.5">
-                🎤 You ({yourLanguage})
-              </div>
-              <div className="text-white leading-snug line-clamp-2">
-                <div className="text-xs text-emerald-200">Original: {localTranscript}</div>
-                {localTranslated && <div className="text-sm mt-1">Translated: {localTranslated}</div>}
-              </div>
-            </div>
-          </div>
-        )}
+        {/* Local Speaking Indicator Tag */}
+        <div className="absolute top-2 left-2 flex items-center gap-1.5 bg-black/60 backdrop-blur-md px-2 py-0.5 rounded-md border border-white/10 text-[10px] text-white">
+          <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+          <span>You ({yourLanguage.toUpperCase()})</span>
+        </div>
       </div>
 
       {/* Styles for video elements and animations */}

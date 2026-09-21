@@ -50,6 +50,7 @@ const GroupVideoCall = ({
   // ── Local UI state ────────────────────────────────────────────────────────
   const [isMuted, setIsMuted] = useState(false);
   const [isCameraOff, setIsCameraOff] = useState(callType === 'audio');
+  const [showCaptions, setShowCaptions] = useState(true);
   const [linkCopied, setLinkCopied] = useState(false);
   const copyTimeoutRef = useRef(null);
 
@@ -243,10 +244,10 @@ const GroupVideoCall = ({
       </div>
 
       {/* Subtitle overlay (synced to TTS playback) */}
-      <GroupCaptionRenderer socket={socket} currentUserId={currentUserId} />
+      <GroupCaptionRenderer socket={socket} currentUserId={currentUserId} visible={showCaptions} />
 
       {/* Transcript overlay */}
-      {transcripts.length > 0 && (
+      {showCaptions && transcripts.length > 0 && (
         <div className="flex-shrink-0 px-4 py-2 space-y-1 max-h-44 overflow-y-auto">
           {transcripts.slice(-3).map((transcript, idx) => {
             const isTranslated = transcript.isTranslated;
@@ -277,6 +278,8 @@ const GroupVideoCall = ({
           endCall={handleEndCall}
           isMuted={isMuted}
           isCameraOff={isCameraOff}
+          showCaptions={showCaptions}
+          toggleCaptions={() => setShowCaptions((prev) => !prev)}
         />
       </div>
     </div>

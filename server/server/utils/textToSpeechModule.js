@@ -8,10 +8,12 @@ const SPEECH_KEY = process.env.AZURE_SPEECH_KEY;
 const SPEECH_REGION = process.env.AZURE_SPEECH_REGION;
 const SPEECH_ENDPOINT = process.env.AZURE_SPEECH_ENDPOINT || `https://${SPEECH_REGION}.api.cognitive.microsoft.com/sts/v1.0/issuetoken`;
 
-console.log('Azure Speech Service Configuration (Text-to-Speech) [next]:');
-console.log('Region:', SPEECH_REGION);
-console.log('Endpoint:', SPEECH_ENDPOINT);
-console.log('Key:', SPEECH_KEY ? '****' + SPEECH_KEY.slice(-4) : 'Not configured');
+if (SPEECH_KEY && SPEECH_REGION) {
+  console.log('Azure Speech Service Configuration (Text-to-Speech) [next]:');
+  console.log('Region:', SPEECH_REGION);
+  console.log('Endpoint:', SPEECH_ENDPOINT);
+  console.log('Key:', '****' + SPEECH_KEY.slice(-4));
+}
 
 const voiceMap = {
   'en': 'en-US-JennyNeural',
@@ -74,7 +76,9 @@ const testAzureSpeechConnection = async () => {
   }
 };
 
-const textToSpeech = async (text, targetLanguage, maxRetries = 3) => {
+const { synthesizeSpeech } = require('../providers/ttsService');
+
+const textToSpeech = async (text, targetLanguage, maxRetries = 2) => {
   if (!text || typeof text !== 'string') {
     throw new Error('Invalid or empty text input');
   }
@@ -86,102 +90,16 @@ const textToSpeech = async (text, targetLanguage, maxRetries = 3) => {
   let attempts = 0;
   let lastError = null;
 
-  // Connection test removed to optimize latency.
-  // Connections are handled by the SDK's internal retry logic.
-
   while (attempts < maxRetries) {
     try {
-      if (!SPEECH_KEY || !SPEECH_REGION) {
-        throw new Error('Azure Speech Service credentials not configured');
-      }
-
-      const standardizedLanguage = targetLanguage || 'en-US';
-      const voiceName = getVoiceFromLanguage(standardizedLanguage) || 'en-US-JennyNeural';
-      const preferredFormat = process.env.AZURE_TTS_AUDIO_FORMAT || '24k-48k';
-
-      // ✅ OPTIMIZED: Reuse SpeechConfig instances via an in-memory pool to eliminate instantiation overhead and connection setups
-      if (!global.__ttsConfigPool) {
-        global.__ttsConfigPool = new Map();
-      }
-      const poolKey = `${SPEECH_KEY}|${SPEECH_REGION}|${SPEECH_ENDPOINT}|${voiceName}|${preferredFormat}`;
-      let speechConfig = global.__ttsConfigPool.get(poolKey);
-
-      if (!speechConfig) {
-        speechConfig = sdk.SpeechConfig.fromSubscription(SPEECH_KEY, SPEECH_REGION);
-        speechConfig.setServiceProperty('endpoint', SPEECH_ENDPOINT, sdk.ServicePropertyChannel.UriQueryParameter);
-        speechConfig.speechSynthesisVoiceName = voiceName;
-
-        if (preferredFormat === '16k-32k') {
-          speechConfig.speechSynthesisOutputFormat = sdk.SpeechSynthesisOutputFormat.Audio16Khz32KBitRateMonoMp3;
-        } else {
-          speechConfig.speechSynthesisOutputFormat = sdk.SpeechSynthesisOutputFormat.Audio24Khz48KBitRateMonoMp3;
-        }
-        global.__ttsConfigPool.set(poolKey, speechConfig);
-      }
-
-      console.log(`🔍 TTS: Using voice: ${voiceName}`);
-
-      // Use null audio config to receive audio in-memory via result.audioData
-      const synthesizer = new sdk.SpeechSynthesizer(speechConfig, null);
-
-      return await new Promise((resolve, reject) => {
-        const timeoutId = setTimeout(() => {
-          try { synthesizer.close(); } catch (e) {}
-          reject(new Error('Text-to-speech operation timed out'));
-        }, 10000);
-
-        const ssmlLangCode = standardizedLanguage.includes('-') ? standardizedLanguage : (voiceName ? voiceName.split('-').slice(0,2).join('-') : standardizedLanguage + '-' + standardizedLanguage.toUpperCase());
-
-        const ssml = `
-          <speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" xml:lang="${ssmlLangCode}">
-            <voice name="${speechConfig.speechSynthesisVoiceName}">
-              ${text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')}
-            </voice>
-          </speak>
-        `;
-
-        synthesizer.speakSsmlAsync(
-          ssml,
-          result => {
-            clearTimeout(timeoutId);
-            try { synthesizer.close(); } catch (e) {}
-
-            console.log(`🔍 TTS: Synthesizer result callback called, result.reason: ${result && result.reason}`);
-
-            if (result && result.reason === sdk.ResultReason.SynthesizingAudioCompleted) {
-              try {
-                // result.audioData is a Uint8Array-like; convert to Buffer
-                const audioData = Buffer.from(result.audioData || []);
-                if (audioData.length === 0) {
-                  reject(new Error('Generated audio is empty'));
-                } else {
-                  console.log(`🔍 TTS: Generated ${audioData.length} bytes in-memory`);
-                  resolve(audioData);
-                }
-              } catch (convErr) {
-                reject(convErr);
-              }
-            } else {
-              const details = result && result.errorDetails ? result.errorDetails : 'Unknown TTS error';
-              reject(new Error(`TTS failed: ${details}`));
-            }
-          },
-          error => {
-            clearTimeout(timeoutId);
-            try { synthesizer.close(); } catch (e) {}
-            reject(error);
-          }
-        );
-      });
-
+      return await synthesizeSpeech({ text, language: targetLanguage });
     } catch (error) {
       lastError = error;
       attempts++;
       if (attempts < maxRetries) {
-        const backoff = Math.min(1000 * Math.pow(2, attempts), 8000);
-        await new Promise(r => setTimeout(r, backoff));
+        await new Promise(r => setTimeout(r, 500));
       } else {
-        throw lastError || new Error('Text-to-speech failed after multiple attempts');
+        throw lastError || new Error('Text-to-speech failed after retries');
       }
     }
   }

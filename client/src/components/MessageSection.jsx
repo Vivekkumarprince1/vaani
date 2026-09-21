@@ -576,8 +576,10 @@ const MessageSection = ({
     const handleKeyPress = (e) => {
         if (e.key === 'Enter' && !e.shiftKey) {
             e.preventDefault();
-            sendMessage(message);
-            setMessage('');
+            if (message && message.trim()) {
+                sendMessage({ content: message.trim() });
+                setMessage('');
+            }
         }
     };
 

@@ -10,11 +10,35 @@ import axios from 'axios';
 const Header = ({ user, toggleSidebar, handleLanguageChange, onShowNotificationSettings }) => {
     const navigate = useNavigate();
     const { t, currentLanguage } = useTranslation();
-    const { logout: authLogout } = useContext(AuthContext);
+    const { logout: authLogout, isAdmin, isSuperAdmin } = useContext(AuthContext);
     const [showUserMenu, setShowUserMenu] = useState(false);
     const [showLanguageMenu, setShowLanguageMenu] = useState(false);
     const [notificationStatus, setNotificationStatus] = useState('default');
-    const [languages, setLanguages] = useState([]);
+    const DEFAULT_HEADER_LANGUAGES = [
+        { value: 'en', label: 'English', nativeName: 'English' },
+        { value: 'hi', label: 'Hindi', nativeName: 'हिन्दी' },
+        { value: 'es', label: 'Spanish', nativeName: 'Español' },
+        { value: 'fr', label: 'French', nativeName: 'Français' },
+        { value: 'de', label: 'German', nativeName: 'Deutsch' },
+        { value: 'it', label: 'Italian', nativeName: 'Italiano' },
+        { value: 'pt', label: 'Portuguese', nativeName: 'Português' },
+        { value: 'ru', label: 'Russian', nativeName: 'Русский' },
+        { value: 'ja', label: 'Japanese', nativeName: '日本語' },
+        { value: 'ko', label: 'Korean', nativeName: '한국어' },
+        { value: 'zh-Hans', label: 'Chinese (Simplified)', nativeName: '简体中文' },
+        { value: 'ar', label: 'Arabic', nativeName: 'العربية' },
+        { value: 'bn', label: 'Bengali', nativeName: 'বাংলা' },
+        { value: 'pa', label: 'Punjabi', nativeName: 'ਪੰਜਾਬੀ' },
+        { value: 'mr', label: 'Marathi', nativeName: 'मराठी' },
+        { value: 'gu', label: 'Gujarati', nativeName: 'ગુજરાતી' },
+        { value: 'ta', label: 'Tamil', nativeName: 'தமிழ்' },
+        { value: 'te', label: 'Telugu', nativeName: 'తెలుగు' },
+        { value: 'kn', label: 'Kannada', nativeName: 'ಕನ್ನಡ' },
+        { value: 'ml', label: 'Malayalam', nativeName: 'മലയാളം' },
+        { value: 'ur', label: 'Urdu', nativeName: 'اردو' }
+    ];
+
+    const [languages, setLanguages] = useState(DEFAULT_HEADER_LANGUAGES);
     const [loadingLanguages, setLoadingLanguages] = useState(false);
     const menuRef = useRef(null);
     const languageMenuRef = useRef(null);
@@ -60,15 +84,21 @@ const Header = ({ user, toggleSidebar, handleLanguageChange, onShowNotificationS
         const fetchLanguages = async () => {
             try {
                 const API_URL = import.meta.env.VITE_API_URL || '/api';
-                const response = await axios.get(`${API_URL}/translator/languages`);
-                const formattedLanguages = Object.entries(response.data).map(([code, details]) => ({
-                    value: code,
-                    label: details.name,
-                    nativeName: details.nativeName
-                }));
-                setLanguages(formattedLanguages);
+                const token = localStorage.getItem('token');
+                const headers = token ? { 'x-auth-token': token } : {};
+                const response = await axios.get(`${API_URL}/translator/languages`, { headers });
+                if (response.data && typeof response.data === 'object') {
+                    const formattedLanguages = Object.entries(response.data).map(([code, details]) => ({
+                        value: code,
+                        label: details?.name || code,
+                        nativeName: details?.nativeName || details?.name || code
+                    }));
+                    if (formattedLanguages.length > 0) {
+                        setLanguages(formattedLanguages);
+                    }
+                }
             } catch (error) {
-                console.error('Error fetching languages:', error);
+                console.warn('Using default languages in header:', error?.message);
             }
         };
 
@@ -201,6 +231,18 @@ const Header = ({ user, toggleSidebar, handleLanguageChange, onShowNotificationS
                             <p className="text-xs text-emerald-100">Online</p>
                         </div>
                     </div>
+                    {isAdmin && (
+                        <button 
+                            onClick={() => navigate('/admin')}
+                            className="px-3 py-1.5 bg-amber-500 hover:bg-amber-600 active:bg-amber-700 rounded-lg text-xs sm:text-sm font-semibold transition-all duration-200 flex items-center space-x-1.5 shadow-md hover:shadow-lg transform hover:scale-105 active:scale-95 text-white"
+                            title="Open Admin Panel"
+                        >
+                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
+                            </svg>
+                            <span>Admin Panel</span>
+                        </button>
+                    )}
                     <button 
                         onClick={logout}
                         className="px-3 py-1.5 bg-red-500 hover:bg-red-600 active:bg-red-700 rounded-lg text-xs sm:text-sm font-semibold transition-all duration-200 flex items-center space-x-1.5 shadow-md hover:shadow-lg transform hover:scale-105 active:scale-95"
@@ -239,6 +281,20 @@ const Header = ({ user, toggleSidebar, handleLanguageChange, onShowNotificationS
 
                             {/* Menu Items */}
                             <div className="py-1">
+                                {isAdmin && (
+                                    <button
+                                        onClick={() => {
+                                            setShowUserMenu(false);
+                                            navigate('/admin');
+                                        }}
+                                        className="w-full text-left px-4 py-3 text-sm text-amber-700 hover:bg-amber-50 flex items-center space-x-3 transition-colors font-medium border-b border-gray-100"
+                                    >
+                                        <svg className="w-5 h-5 text-amber-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
+                                        </svg>
+                                        <span>Admin Panel</span>
+                                    </button>
+                                )}
                                 <button
                                     onClick={logout}
                                     className="w-full text-left px-4 py-3 text-sm text-red-600 hover:bg-red-50 flex items-center space-x-3 border-t border-gray-100 transition-colors font-medium"

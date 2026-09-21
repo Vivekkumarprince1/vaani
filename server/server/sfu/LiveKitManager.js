@@ -8,6 +8,10 @@ const { config } = require('../utils/env');
  */
 class LiveKitManager {
   constructor() {
+    this.refresh();
+  }
+
+  refresh() {
     this.apiKey = config.LIVEKIT_API_KEY;
     this.apiSecret = config.LIVEKIT_API_SECRET;
     this.livekitUrl = config.LIVEKIT_URL;
@@ -15,11 +19,11 @@ class LiveKitManager {
     if (!this.apiKey || !this.apiSecret) {
       console.warn('[LiveKitManager] LIVEKIT_API_KEY / LIVEKIT_API_SECRET not set — SFU disabled');
       this.enabled = false;
+      this.roomService = null;
       return;
     }
 
     this.enabled = true;
-    // RoomServiceClient expects HTTP(S) URL, not WS
     const httpUrl = this.livekitUrl
       .replace('wss://', 'https://')
       .replace('ws://', 'http://');
@@ -99,11 +103,24 @@ class LiveKitManager {
    * Delete a LiveKit room entirely. Call when group call ends.
    */
   async deleteRoom(callRoomId) {
-    if (!this.enabled) return;
+    if (!this.enabled || !this.roomService) return;
     try {
       await this.roomService.deleteRoom(callRoomId);
     } catch (err) {
       console.warn(`[LiveKitManager] deleteRoom failed: ${err.message}`);
+    }
+  }
+
+  /**
+   * List all active rooms from LiveKit server
+   */
+  async listRooms(names = []) {
+    if (!this.enabled || !this.roomService) return [];
+    try {
+      return await this.roomService.listRooms(names);
+    } catch (err) {
+      console.warn(`[LiveKitManager] listRooms failed: ${err.message}`);
+      return [];
     }
   }
 }

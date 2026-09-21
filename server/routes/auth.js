@@ -20,13 +20,17 @@ router.post('/login', async (req, res) => {
     const isMatch = await bcrypt.compare(password, user.password);
     if (!isMatch) return res.status(400).json({ error: 'Invalid credentials' });
 
+    if (user.isActive === false) {
+      return res.status(403).json({ error: 'Account has been deactivated. Please contact an administrator.' });
+    }
+
     // Update user status to online
     user.status = 'online';
     user.lastActive = Date.now();
     await user.save();
 
     const token = jwt.sign(
-      { userId: user._id, role: user.role, username: user.username },
+      { userId: user._id, role: user.role || 'user', username: user.username },
       process.env.JWT_SECRET,
       { expiresIn: '24h' }
     );
@@ -36,6 +40,7 @@ router.post('/login', async (req, res) => {
       user: {
         id: user._id,
         username: user.username,
+        role: user.role || 'user',
         status: user.status,
         preferredLanguage: user.preferredLanguage
       }
@@ -90,6 +95,7 @@ router.post('/register', async (req, res) => {
       user: {
         id: user._id,
         username: user.username,
+        role: user.role || 'user',
         status: user.status,
         preferredLanguage: user.preferredLanguage
       }
@@ -211,15 +217,42 @@ router.put('/language', authenticate, async (req, res) => {
     await connectDB();
 
     const { language } = req.body;
+    if (!language) {
+      return res.status(400).json({ error: 'Language is required' });
+    }
 
+    const userId = req.user.userId || req.user.id;
     const user = await User.findByIdAndUpdate(
-      req.user.userId,
+      userId,
       { preferredLanguage: language },
       { new: true }
     ).select('-password');
 
     if (!user) {
       return res.status(404).json({ error: 'User not found' });
+    }
+
+    // Sync to Redis and in-memory presence
+    try {
+      const redisManager = require('../server/redis/RedisManager');
+      redisManager.setUser(String(userId), {
+        preferredLanguage: language
+      }).catch(() => {});
+    } catch (e) {}
+
+    const connected = global.__connectedUsers || {};
+    Object.values(connected).forEach(u => {
+      if (String(u.userId) === String(userId)) {
+        u.preferredLanguage = language;
+      }
+    });
+
+    const io = global.__io;
+    if (io) {
+      io.emit('userLanguageChanged', {
+        userId,
+        preferredLanguage: language
+      });
     }
 
     return res.json(user);

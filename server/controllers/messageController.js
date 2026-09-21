@@ -106,18 +106,14 @@ class MessageController {
         if (io) {
           if (roomId) {
             // Emit to the room
-            io.to(roomId).emit('receiveMessage', optimisticMessage);
+            io.to(roomId.toString()).emit('receiveMessage', optimisticMessage);
           } else if (receiverId) {
-            // Emit to RECEIVER and SENDER
-            const sockets = Array.from(io.of('/').sockets.values());
-            sockets.forEach(s => {
-              if (s.user && (s.user.userId === receiverId || s.user.userId === receiverId.toString())) {
-                io.to(s.id).emit('receiveMessage', optimisticMessage);
-              }
-              if (s.user && (s.user.userId === decoded.userId || s.user.userId === decoded.userId.toString())) {
-                io.to(s.id).emit('receiveMessage', optimisticMessage);
-              }
-            });
+            const recIdStr = receiverId.toString();
+            const senderIdStr = decoded.userId.toString();
+
+            // Emit to both user private rooms (instant push to all active tabs/devices)
+            io.to(`user_${recIdStr}`).emit('receiveMessage', optimisticMessage);
+            io.to(`user_${senderIdStr}`).emit('receiveMessage', optimisticMessage);
           }
         }
       } catch (emitErr) {
@@ -131,15 +127,11 @@ class MessageController {
       try {
         const io = global.__io;
         if (io) {
-          const sockets = Array.from(io.of('/').sockets.values());
-          sockets.forEach(s => {
-            if (s.user && (s.user.userId === decoded.userId || s.user.userId === decoded.userId.toString())) {
-              io.to(s.id).emit('messageStatusUpdate', {
-                messageId: newMessage._id,
-                status: 'sent',
-                clientTempId: clientTempId || null
-              });
-            }
+          const senderIdStr = decoded.userId.toString();
+          io.to(`user_${senderIdStr}`).emit('messageStatusUpdate', {
+            messageId: newMessage._id,
+            status: 'sent',
+            clientTempId: clientTempId || null
           });
         }
       } catch (statusErr) {

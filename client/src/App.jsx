@@ -9,6 +9,8 @@ import Login from './pages/Login';
 import Register from './pages/Register';
 import Dashboard from './pages/Dashboard';
 import JoinCall from './pages/JoinCall';
+import AdminRoute from './components/AdminRoute';
+import AdminLayout from './pages/admin/AdminLayout';
 import './index.css';
 
 function App() {
@@ -24,6 +26,14 @@ function App() {
                 <Route path="/register" element={<Register />} />
                 <Route path="/dashboard" element={<Dashboard />} />
                 <Route path="/join/:callRoomId" element={<JoinCall />} />
+                <Route
+                  path="/admin/*"
+                  element={
+                    <AdminRoute>
+                      <AdminLayout />
+                    </AdminRoute>
+                  }
+                />
               </Routes>
             </Router>
           </TranslationProvider>

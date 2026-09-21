@@ -11,8 +11,33 @@ const DEFAULT_IDLE_TIMEOUT_MS = parseInt(
 );
 const DEFAULT_BACKPRESSURE_STATUS_INTERVAL_MS = 5 * 1000;
 
+function pcmToWav(pcmBuffer, sampleRate = 16000, numChannels = 1, bitDepth = 16) {
+  const header = Buffer.alloc(44);
+  const byteRate = sampleRate * numChannels * (bitDepth / 8);
+  const blockAlign = numChannels * (bitDepth / 8);
+  const dataSize = pcmBuffer.length;
+  const chunkSize = 36 + dataSize;
+
+  header.write('RIFF', 0);
+  header.writeUInt32LE(chunkSize, 4);
+  header.write('WAVE', 8);
+  header.write('fmt ', 12);
+  header.writeUInt32LE(16, 16);
+  header.writeUInt16LE(1, 20);
+  header.writeUInt16LE(numChannels, 22);
+  header.writeUInt32LE(sampleRate, 24);
+  header.writeUInt32LE(byteRate, 28);
+  header.writeUInt16LE(blockAlign, 32);
+  header.writeUInt16LE(bitDepth, 34);
+  header.write('data', 36);
+  header.writeUInt32LE(dataSize, 40);
+
+  return Buffer.concat([header, pcmBuffer]);
+}
+
 class OneToOneTranslationSessionManager {
   constructor(deps = {}) {
+    this.customSdk = Boolean(deps.sdk);
     const speechTranslation = deps.getTranslationConfig && deps.toSpeechLocale && deps.toLanguageCode
       ? null
       : require('../utils/speechTranslationSDK');
@@ -55,14 +80,33 @@ class OneToOneTranslationSessionManager {
       targetLanguage: targetCode,
     });
 
-    const translationConfig = this.getTranslationConfig(sourceLocale, [targetCode]);
-    const audioFormat = this.sdk.AudioStreamFormat.getWaveFormatPCM(16000, 16, 1);
-    const pushStream = this.sdk.AudioInputStream.createPushStream(audioFormat);
-    const audioConfig = this.sdk.AudioConfig.fromStreamInput(pushStream);
-    const recognizer = new this.sdk.TranslationRecognizer(translationConfig, audioConfig);
+    let isAzure = false;
+    if (this.customSdk) {
+      isAzure = true;
+    } else {
+      try {
+        const providerManager = require('../providers/providerManager');
+        const sttInfo = providerManager.getActiveProvider ? providerManager.getActiveProvider('stt') : null;
+        if (sttInfo?.providerName === 'azure' && (sttInfo?.config?.apiKey || process.env.AZURE_SPEECH_KEY)) {
+          isAzure = true;
+        }
+      } catch (e) {}
+    }
+
+    let pushStream = null;
+    let recognizer = null;
+
+    if (isAzure) {
+      const translationConfig = this.getTranslationConfig(sourceLocale, [targetCode]);
+      const audioFormat = this.sdk.AudioStreamFormat.getWaveFormatPCM(16000, 16, 1);
+      pushStream = this.sdk.AudioInputStream.createPushStream(audioFormat);
+      const audioConfig = this.sdk.AudioConfig.fromStreamInput(pushStream);
+      recognizer = new this.sdk.TranslationRecognizer(translationConfig, audioConfig);
+    }
 
     const session = {
       key,
+      mode: isAzure ? 'azure' : 'modular',
       io,
       socket,
       socketId: socket.id,
@@ -72,6 +116,11 @@ class OneToOneTranslationSessionManager {
       requestId: streamId,
       pushStream,
       recognizer,
+      audioChunks: [],
+      speechActive: false,
+      silenceCount: 0,
+      lastSpeechFlushAt: this.now(),
+      isProcessing: false,
       startedAt: this.now(),
       active: true,
       bytesReceived: 0,
@@ -88,30 +137,36 @@ class OneToOneTranslationSessionManager {
 
     this.sessions.set(key, session);
     this.socketIndex.set(socket.id, key);
-    this._wireRecognizer(session);
     this._startIdleMonitor(session);
 
-    await new Promise((resolve, reject) => {
-      recognizer.startContinuousRecognitionAsync(
-        () => {
-          if (!session.active) return resolve();
-          this._emitStatus(socket, 'authenticating', {
-            requestId: streamId,
-            targetLanguage: targetCode,
-          });
-          resolve();
-        },
-        (err) => {
-          this.sessions.delete(key);
-          this.socketIndex.delete(socket.id);
-          this._stopIdleMonitor(session);
-          this._safeClose(pushStream);
-          this._safeClose(recognizer);
-          this._emitError(socket, 'Failed to start translation stream', streamId, err);
-          reject(err);
-        }
-      );
-    });
+    if (isAzure) {
+      this._wireRecognizer(session);
+
+      await new Promise((resolve, reject) => {
+        recognizer.startContinuousRecognitionAsync(
+          () => {
+            if (!session.active) return resolve();
+            this._emitStatus(socket, 'authenticating', {
+              requestId: streamId,
+              targetLanguage: targetCode,
+            }, session);
+            resolve();
+          },
+          (err) => {
+            this.sessions.delete(key);
+            this.socketIndex.delete(socket.id);
+            this._stopIdleMonitor(session);
+            this._safeClose(pushStream);
+            this._safeClose(recognizer);
+            this._emitError(socket, 'Failed to start translation stream', streamId, err);
+            reject(err);
+          }
+        );
+      });
+    } else {
+      // Modular Pipeline (Groq, Deepgram, OpenAI, NVIDIA) is immediately live!
+      this._markLive(session);
+    }
 
     return session;
   }
@@ -124,7 +179,7 @@ class OneToOneTranslationSessionManager {
 
   writeChunk(key, chunk) {
     const session = this.sessions.get(key);
-    if (!session?.active || !session.pushStream) return false;
+    if (!session?.active) return false;
 
     const buffer = this._normalizeChunk(chunk);
     if (!buffer || buffer.length === 0 || buffer.length > PCM_CHUNK_MAX_BYTES) return false;
@@ -134,15 +189,116 @@ class OneToOneTranslationSessionManager {
       return false;
     }
 
+    session.bytesReceived += buffer.length;
+    session.lastAudioAt = now;
+
+    if (session.mode === 'azure') {
+      if (!session.pushStream) return false;
+      try {
+        session.pushStream.write(buffer);
+        return true;
+      } catch (err) {
+        this._emitError(session.socket, 'Audio stream write failed', session.requestId, err);
+        this.stopSession(key, 'write_failed').catch(() => {});
+        return false;
+      }
+    }
+
+    // Modular Mode (Groq Whisper, Deepgram, OpenAI, etc.)
+    let sum = 0;
+    const samples = Math.floor(buffer.length / 2);
+    for (let i = 0; i < buffer.length - 1; i += 2) {
+      sum += Math.abs(buffer.readInt16LE(i));
+    }
+    const energy = samples > 0 ? (sum / samples) : 0;
+    const SILENCE_THRESHOLD = 80;
+
+    if (energy > SILENCE_THRESHOLD) {
+      session.speechActive = true;
+      session.silenceCount = 0;
+      session.audioChunks.push(buffer);
+    } else if (session.speechActive) {
+      session.silenceCount++;
+      // Cap trailing silence to at most 6 frames (~180ms) to prevent Whisper hallucination
+      if (session.silenceCount <= 6) {
+        session.audioChunks.push(buffer);
+      }
+    }
+
+    // Flush speech segment: 10 silence chunks (~300ms pause) or 80 chunks (~2.5s audio)
+    const shouldFlush = session.speechActive && (
+      session.silenceCount >= 10 ||
+      session.audioChunks.length >= 80 ||
+      (now - session.lastSpeechFlushAt > 3000 && session.audioChunks.length >= 15)
+    );
+
+    if (shouldFlush && !session.isProcessing) {
+      this._processModularSpeechSegment(session).catch(err => {
+        console.error('[OneToOneTranslationSessionManager] Modular segment error:', err);
+      });
+    }
+
+    return true;
+  }
+
+  async _processModularSpeechSegment(session) {
+    if (!session.active || session.audioChunks.length === 0) return;
+    session.isProcessing = true;
+    const chunks = session.audioChunks;
+    session.audioChunks = [];
+    session.speechActive = false;
+    session.silenceCount = 0;
+    session.lastSpeechFlushAt = this.now();
+
     try {
-      session.pushStream.write(buffer);
-      session.bytesReceived += buffer.length;
-      session.lastAudioAt = now;
-      return true;
+      const pcmBuffer = Buffer.concat(chunks);
+      if (pcmBuffer.length < 6400) {
+        session.isProcessing = false;
+        return;
+      }
+
+      const wavBuffer = pcmToWav(pcmBuffer, 16000, 1, 16);
+      const sttService = require('../providers/sttService');
+      const { translateText } = require('../utils/speechTranslator');
+
+      const originalText = await sttService.recognizeSpeech({
+        audioBuffer: wavBuffer,
+        language: session.sourceLanguage
+      });
+
+      if (!originalText || !originalText.trim() || !session.active) {
+        session.isProcessing = false;
+        return;
+      }
+
+      console.log(`🎙️ [OneToOne Modular STT] "${originalText}" (${session.sourceLanguage} -> ${session.targetLanguage})`);
+      const translatedText = await translateText(originalText, session.sourceLanguage, session.targetLanguage);
+      console.log(`🌐 [OneToOne Modular Translated] "${translatedText}"`);
+
+      await this._handleFinalResult(session, originalText, translatedText || originalText);
     } catch (err) {
-      this._emitError(session.socket, 'Audio stream write failed', session.requestId, err);
-      this.stopSession(key, 'write_failed').catch(() => {});
-      return false;
+      console.error('[OneToOneTranslationSessionManager] Modular speech processing failed:', err && err.message);
+    } finally {
+      session.isProcessing = false;
+      // Auto-drain: if speech continued and new chunks accumulated, trigger next segment
+      if (session.active && session.audioChunks.length >= 15 && (session.silenceCount >= 6 || session.audioChunks.length >= 80)) {
+        setImmediate(() => {
+          if (!session.isProcessing) {
+            this._processModularSpeechSegment(session).catch(() => {});
+          }
+        });
+      }
+    }
+  }
+
+  updateTargetLanguageForReceiver(receiverUserId, newTargetLanguage) {
+    if (!receiverUserId) return;
+    const targetCode = this.toLanguageCode(newTargetLanguage || 'en');
+    for (const session of this.sessions.values()) {
+      if (String(session.receiverUserId) === String(receiverUserId)) {
+        session.targetLanguage = targetCode;
+        console.log(`🔄 [OneToOneTranslationSessionManager] Switched active session targetLanguage to ${targetCode} for receiver ${receiverUserId}`);
+      }
     }
   }
 
@@ -163,24 +319,26 @@ class OneToOneTranslationSessionManager {
     }
     this._stopIdleMonitor(session);
 
-    this._safeClose(session.pushStream);
-    await new Promise((resolve) => {
-      try {
-        session.recognizer.stopContinuousRecognitionAsync(
-          () => {
-            this._safeClose(session.recognizer);
-            resolve();
-          },
-          () => {
-            this._safeClose(session.recognizer);
-            resolve();
-          }
-        );
-      } catch {
-        this._safeClose(session.recognizer);
-        resolve();
-      }
-    });
+    if (session.mode === 'azure') {
+      this._safeClose(session.pushStream);
+      await new Promise((resolve) => {
+        try {
+          session.recognizer?.stopContinuousRecognitionAsync(
+            () => {
+              this._safeClose(session.recognizer);
+              resolve();
+            },
+            () => {
+              this._safeClose(session.recognizer);
+              resolve();
+            }
+          );
+        } catch {
+          this._safeClose(session.recognizer);
+          resolve();
+        }
+      });
+    }
 
     this._emitStatus(session.socket, 'off', {
       requestId: session.requestId,
@@ -188,7 +346,7 @@ class OneToOneTranslationSessionManager {
       bytesReceived: session.bytesReceived,
       droppedChunks: session.droppedChunks,
       droppedBytes: session.droppedBytes,
-    });
+    }, session);
   }
 
   activeCount() {

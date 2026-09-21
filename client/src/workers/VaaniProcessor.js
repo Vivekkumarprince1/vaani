@@ -20,11 +20,8 @@ class VaaniProcessor extends AudioWorkletProcessor {
         this.buffer[this.bufferIndex++] = channelData[i];
 
         if (this.bufferIndex >= this.bufferSize) {
-          // Send PCM buffer to main thread
-          this.port.postMessage(this.buffer);
-          
-          // Reset buffer
-          this.buffer = new Float32Array(this.bufferSize);
+          // Send PCM buffer slice to main thread without re-allocating this.buffer
+          this.port.postMessage(this.buffer.slice());
           this.bufferIndex = 0;
         }
       }

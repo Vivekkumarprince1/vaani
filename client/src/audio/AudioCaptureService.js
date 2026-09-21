@@ -72,9 +72,12 @@ class AudioCaptureService {
   }
 
   float32ToInt16(float32Array) {
-    const int16Array = new Int16Array(float32Array.length);
-    for (let i = 0; i < float32Array.length; i++) {
-      const s = Math.max(-1, Math.min(1, float32Array[i]));
+    const len = float32Array.length;
+    const int16Array = new Int16Array(len);
+    for (let i = 0; i < len; i++) {
+      let sample = float32Array[i];
+      if (Number.isNaN(sample)) sample = 0;
+      const s = Math.max(-1, Math.min(1, sample));
       int16Array[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
     }
     return int16Array.buffer;

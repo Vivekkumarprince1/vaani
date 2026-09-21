@@ -28,15 +28,12 @@ if (dotenvPath) {
   }
 }
 
-// Validate required environment variables early
-const required = ['AZURE_SPEECH_KEY', 'AZURE_SPEECH_REGION'];
+// Validate required environment variables early (dynamic providers managed by ProviderManager)
+const required = [];
 const missing = required.filter((k) => !process.env[k]);
 if (missing.length) {
-  // Throw early — caller can catch when running in environments like tests
   const msg = `Missing required env vars: ${missing.join(', ')}`;
-  // eslint-disable-next-line no-console
   console.error(msg);
-  // Don't crash in dev where the file might be used for tooling; instead throw when accessed
 }
 
 const config = {

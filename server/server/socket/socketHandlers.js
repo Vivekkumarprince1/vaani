@@ -35,8 +35,9 @@ module.exports = (io, users, rooms, findUserByUserId, userIdToSocketId) => {
       console.warn(`Failed to fetch user ${userId} from DB during registration`);
     }
 
+    const clientPreferredLang = socket.handshake?.auth?.preferredLanguage;
     const finalUsername = dbUser?.username || username;
-    const preferredLanguage = dbUser?.preferredLanguage || 'en';
+    const preferredLanguage = clientPreferredLang || dbUser?.preferredLanguage || 'en';
 
     users[socket.id] = {
       socketId: socket.id,
@@ -68,7 +69,8 @@ module.exports = (io, users, rooms, findUserByUserId, userIdToSocketId) => {
       await User.findByIdAndUpdate(userId, {
         status: 'online',
         lastActive: new Date(),
-        socketId: socket.id
+        socketId: socket.id,
+        ...(clientPreferredLang ? { preferredLanguage: clientPreferredLang } : {})
       });
       console.log(`[socketHandlers] User registered: socketId=${socket.id}, userId=${userIdStr}, username=${finalUsername}, lang=${preferredLanguage}`);
     } catch (error) {
@@ -99,10 +101,18 @@ module.exports = (io, users, rooms, findUserByUserId, userIdToSocketId) => {
     }
 
     // Handle language preference updates
-    socket.on('updateLanguagePreference', (data) => {
+    socket.on('updateLanguagePreference', async (data) => {
       const { language } = data;
       if (language && users[socket.id]) {
         users[socket.id].preferredLanguage = language;
+        if (socket.user) socket.user.preferredLanguage = language;
+
+        // Persist to MongoDB
+        try {
+          await User.findByIdAndUpdate(userId, { preferredLanguage: language });
+        } catch (err) {
+          console.error(`[socketHandlers] Failed to persist preferredLanguage for user ${userId}:`, err);
+        }
 
         // Keep Redis presence in sync so cross-instance translation targets the
         // updated language immediately.
@@ -118,6 +128,12 @@ module.exports = (io, users, rooms, findUserByUserId, userIdToSocketId) => {
         if (callRoomId) {
           participantManager.updateLanguage(callRoomId, userId, language);
         }
+
+        // Keep OneToOne active sessions targeting this user updated
+        try {
+          const oneToOneSessionManager = require('../translation/OneToOneTranslationSessionManager');
+          oneToOneSessionManager.updateTargetLanguageForReceiver(userId, language);
+        } catch (e) {}
 
         socket.broadcast.emit('userLanguageChanged', {
           userId: userId,
@@ -310,7 +326,7 @@ module.exports = (io, users, rooms, findUserByUserId, userIdToSocketId) => {
             io.to(toUser.socketId).emit('incomingCall', {
               from: userId,
               fromName: socket.user.username,
-              fromLanguage: socket.user.preferredLanguage || 'en',
+              fromLanguage: users[socket.id]?.preferredLanguage || socket.user?.preferredLanguage || 'en',
               offer,
               callType
             });
@@ -338,7 +354,7 @@ module.exports = (io, users, rooms, findUserByUserId, userIdToSocketId) => {
         if (toUser) {
           io.to(toUser.socketId).emit('callAnswered', {
             from: userId,
-            fromLanguage: socket.user.preferredLanguage || 'en',
+            fromLanguage: users[socket.id]?.preferredLanguage || socket.user?.preferredLanguage || 'en',
             answer
           });
         }

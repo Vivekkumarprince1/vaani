@@ -289,4 +289,27 @@ describe('OneToOneTranslationSessionManager', () => {
     expect(socket.emitted.some((e) => e.event === 'translationStreamStatus' && e.payload.status === 'degraded')).toBe(true);
     expect(socket.emitted.some((e) => e.event === 'translatedSpeech' && e.payload.audio)).toBe(false);
   });
+
+  test('dynamically switches targetLanguage for active session when receiver updates language preference', async () => {
+    const { sdk } = createFakeSdk();
+    const manager = new OneToOneTranslationSessionManager(testDeps(sdk, {
+      now: () => 1000,
+    }));
+    const socket = createSocket('s1');
+
+    await manager.startSession({
+      io: createIo(),
+      socket,
+      receiverUserId: 'user-bob',
+      sourceLanguage: 'hi',
+      targetLanguage: 'es',
+      requestId: 'req-1'
+    });
+
+    const sessionBefore = manager.sessions.get(manager._key('s1', 'user-bob'));
+    expect(sessionBefore.targetLanguage).toBe('es');
+
+    manager.updateTargetLanguageForReceiver('user-bob', 'en');
+    expect(sessionBefore.targetLanguage).toBe('en');
+  });
 });

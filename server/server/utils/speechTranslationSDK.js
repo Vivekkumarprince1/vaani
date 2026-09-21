@@ -12,8 +12,16 @@ const pLimit = (pLimitModule && pLimitModule.default) ? pLimitModule.default : p
 // Validate lazily when translation is actually invoked.
 
 function getSpeechCredentialsOrThrow() {
-  const key = (config.AZURE_SPEECH_KEY || '').trim();
-  const region = (config.AZURE_SPEECH_REGION || '').trim().toLowerCase();
+  let key = (config.AZURE_SPEECH_KEY || '').trim();
+  let region = (config.AZURE_SPEECH_REGION || '').trim().toLowerCase();
+
+  try {
+    const providerManager = require('../providers/providerManager');
+    const stt = providerManager.getActiveProvider ? providerManager.getActiveProvider('stt') : null;
+    if (stt?.config?.apiKey) key = stt.config.apiKey.trim();
+    if (stt?.config?.region) region = stt.config.region.trim().toLowerCase();
+  } catch (e) {}
+
   if (!key || !region) {
     throw new Error('Azure Speech credentials missing: set AZURE_SPEECH_KEY and AZURE_SPEECH_REGION to use speech translation');
   }
@@ -93,10 +101,13 @@ function getTranslationConfig(sourceLocale, targetLangCodes = []) {
 }
 
 // Clear stale configs periodically to prevent WebSocket connection issues
-setInterval(() => {
+const refreshTimer = setInterval(() => {
   console.log('[speechTranslationSDK] Clearing config pool to refresh Azure connections');
   configPool.clear();
 }, CONFIG_POOL_REFRESH_INTERVAL);
+if (refreshTimer && typeof refreshTimer.unref === 'function') {
+  refreshTimer.unref();
+}
 
 // TTS concurrency limiter (batching)
 const ttsLimit = pLimit(config.TTS_CONCURRENCY || 4);

@@ -14,13 +14,13 @@ function makeEntry(value, ttlMs) {
 // Default TTL: 7 days
 const DEFAULT_TTL = 1000 * 60 * 60 * 24 * 7;
 
-export function makeKey(text, target, source) {
+function makeKey(text, target, source) {
   const safeText = typeof text === 'string' ? text : JSON.stringify(text);
   const b64 = Buffer.from(safeText).toString('base64');
   return `${target}:${source || 'auto'}:${b64}`;
 }
 
-export function get(key) {
+function get(key) {
   const entry = cache.get(key);
   if (!entry) {
     misses++;
@@ -32,15 +32,14 @@ export function get(key) {
     return null;
   }
   hits++;
-  // console.log(`🎯 Cache HIT (${getHitRate().toFixed(1)}% hit rate)`);
   return entry.value;
 }
 
-export function set(key, value, ttlMs = DEFAULT_TTL) {
+function set(key, value, ttlMs = DEFAULT_TTL) {
   cache.set(key, makeEntry(value, ttlMs));
 }
 
-export function getMany(keys) {
+function getMany(keys) {
   const result = new Map();
   for (const k of keys) {
     const v = get(k);
@@ -49,12 +48,12 @@ export function getMany(keys) {
   return result;
 }
 
-export function setMany(map, ttlMs = DEFAULT_TTL) {
+function setMany(map, ttlMs = DEFAULT_TTL) {
   for (const [k, v] of map.entries()) set(k, v, ttlMs);
 }
 
 // ✅ OPTIMIZED: Cache statistics and metrics
-export function getStats() {
+function getStats() {
   const total = hits + misses;
   return {
     size: cache.size,
@@ -65,12 +64,12 @@ export function getStats() {
   };
 }
 
-export function getHitRate() {
+function getHitRate() {
   const total = hits + misses;
   return total === 0 ? 0 : (hits / total) * 100;
 }
 
-export function printStats() {
+function printStats() {
   const stats = getStats();
   console.log('📊 Translation Cache Statistics:');
   console.log(`   ├─ Size: ${stats.size} entries`);
@@ -80,15 +79,15 @@ export function printStats() {
   console.log(`   └─ Total Requests: ${stats.totalRequests}`);
 }
 
-export function clear() {
+function clear() {
   cache.clear();
   hits = 0;
   misses = 0;
   console.log('🗑️ Translation cache cleared');
 }
 
-// Periodic cleanup
-setInterval(() => {
+// Periodic cleanup with unref so it does not prevent process exit
+const cleanupInterval = setInterval(() => {
   const now = Date.now();
   let cleaned = 0;
   for (const [k, entry] of cache.entries()) {
@@ -102,4 +101,9 @@ setInterval(() => {
   }
 }, 1000 * 60 * 60); // hourly
 
-export default { makeKey, get, set, getMany, setMany, getStats, getHitRate, printStats, clear };
+if (cleanupInterval && typeof cleanupInterval.unref === 'function') {
+  cleanupInterval.unref();
+}
+
+module.exports = { makeKey, get, set, getMany, setMany, getStats, getHitRate, printStats, clear };
+module.exports.default = module.exports;

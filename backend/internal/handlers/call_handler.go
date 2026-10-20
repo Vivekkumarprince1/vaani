@@ -61,6 +61,11 @@ func (h *CallHandler) GetToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if !h.userCanAccessCall(r.Context(), body.RoomSlug, claims.UserID) {
+		http.Error(w, `{"error":"you are not a participant in this call"}`, http.StatusForbidden)
+		return
+	}
+
 	_ = h.livekitMgr.EnsureRoom(r.Context(), body.RoomSlug)
 
 	// When participant gets token to join room, update call status from 'ringing' to 'active'
@@ -133,14 +138,39 @@ func (h *CallHandler) InitiateCall(w http.ResponseWriter, r *http.Request) {
 		body.CallType = "video"
 	}
 
+	if body.RoomID != nil {
+		var isMember bool
+		if err := h.db.Pool.QueryRow(r.Context(),
+			`SELECT EXISTS(
+				SELECT 1 FROM room_members WHERE room_id = $1 AND user_id = $2
+			)`, body.RoomID, claims.UserID,
+		).Scan(&isMember); err != nil || !isMember {
+			http.Error(w, `{"error":"you are not a member of this room"}`, http.StatusForbidden)
+			return
+		}
+	}
+
+	participants := []map[string]interface{}{
+		{
+			"user_id":  claims.UserID.String(),
+			"username": claims.Username,
+		},
+	}
+	if body.TargetUserID != nil {
+		participants = append(participants, map[string]interface{}{
+			"user_id": body.TargetUserID.String(),
+		})
+	}
+	participantsJSON, _ := json.Marshal(participants)
+
 	callRoomID := "call_" + uuid.New().String()[:12]
 
 	var callID uuid.UUID
 	err := h.db.Pool.QueryRow(r.Context(),
-		`INSERT INTO call_logs (call_room_id, room_id, initiator_id, call_type, status, started_at)
-		 VALUES ($1, $2, $3, $4, 'ringing', NOW())
+		`INSERT INTO call_logs (call_room_id, room_id, initiator_id, call_type, status, started_at, participants)
+		 VALUES ($1, $2, $3, $4, 'ringing', NOW(), $5)
 		 RETURNING id`,
-		callRoomID, body.RoomID, claims.UserID, body.CallType,
+		callRoomID, body.RoomID, claims.UserID, body.CallType, participantsJSON,
 	).Scan(&callID)
 
 	if err != nil {
@@ -221,12 +251,23 @@ func (h *CallHandler) InitiateCall(w http.ResponseWriter, r *http.Request) {
 
 // EndCall terminates the call session
 func (h *CallHandler) EndCall(w http.ResponseWriter, r *http.Request) {
+	claims := auth.GetUserFromContext(r.Context())
+	if claims == nil {
+		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+		return
+	}
+
 	var body struct {
 		CallRoomID string `json:"call_room_id"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.CallRoomID == "" {
 		http.Error(w, `{"error":"call_room_id is required"}`, http.StatusBadRequest)
+		return
+	}
+
+	if !h.userCanAccessCall(r.Context(), body.CallRoomID, claims.UserID) {
+		http.Error(w, `{"error":"you are not a participant in this call"}`, http.StatusForbidden)
 		return
 	}
 
@@ -614,6 +655,11 @@ func (h *CallHandler) HandleCallSpeech(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if body.CallRoomID == "" || !h.userCanAccessCall(r.Context(), body.CallRoomID, claims.UserID) {
+		http.Error(w, `{"error":"you are not a participant in this call"}`, http.StatusForbidden)
+		return
+	}
+
 	sourceLang := strings.TrimSpace(body.Language)
 	if strings.EqualFold(sourceLang, "auto") || sourceLang == "detect" {
 		sourceLang = ""
@@ -716,6 +762,11 @@ func (h *CallHandler) HandleCallAudio(w http.ResponseWriter, r *http.Request) {
 	}
 
 	callRoomID := r.FormValue("call_room_id")
+	if callRoomID == "" || !h.userCanAccessCall(r.Context(), callRoomID, claims.UserID) {
+		http.Error(w, `{"error":"you are not a participant in this call"}`, http.StatusForbidden)
+		return
+	}
+
 	sourceLang := strings.TrimSpace(r.FormValue("language"))
 	if strings.EqualFold(sourceLang, "auto") || sourceLang == "detect" {
 		sourceLang = ""
@@ -805,6 +856,34 @@ func (h *CallHandler) HandleCallAudio(w http.ResponseWriter, r *http.Request) {
 		"text":      recognizedText,
 		"subtitles": generatedSubtitles,
 	})
+}
+
+// userCanAccessCall verifies that a user is the call initiator, a recorded
+// direct-call participant, or a member of the room associated with the call.
+// Keeping this check server-side prevents authenticated users from minting
+// tokens or injecting speech into arbitrary call rooms.
+func (h *CallHandler) userCanAccessCall(ctx context.Context, callRoomID string, userID uuid.UUID) bool {
+	if h.db == nil || h.db.Pool == nil || callRoomID == "" {
+		return false
+	}
+
+	var allowed bool
+	err := h.db.Pool.QueryRow(ctx, `
+		SELECT EXISTS(
+			SELECT 1
+			FROM call_logs c
+			LEFT JOIN room_members rm
+				ON rm.room_id = c.room_id AND rm.user_id = $2
+			WHERE c.call_room_id = $1
+			  AND c.status IN ('ringing', 'active')
+			  AND (
+					c.initiator_id = $2
+					OR rm.user_id IS NOT NULL
+					OR c.participants @> jsonb_build_array(jsonb_build_object('user_id', $2::text))
+			  )
+		)`, callRoomID, userID).Scan(&allowed)
+
+	return err == nil && allowed
 }
 
 func (h *CallHandler) getTargetLanguagesForCall(ctx context.Context, callRoomID string, senderID uuid.UUID, sourceLang string) []string {

@@ -70,10 +70,10 @@ migration schema as the source of truth.
 
 ## OCI production deployment
 
-The repository includes production Dockerfiles for separate backend and
-frontend containers. The recommended OCI layout is OCI Container Instances
-with images stored in OCIR, OCI Database with PostgreSQL, OCI Cache with Redis,
-and LiveKit Cloud. Follow the deployment runbook in `infra/oci/README.md`.
+The frontend deploys to Vercel and the backend runs in an OCI Container
+Instance with its image stored in OCIR. PostgreSQL and Redis use OCI managed
+services, while LiveKit uses LiveKit Cloud. Follow the deployment runbook in
+`infra/oci/README.md`.
 
 The backend migration image is `/app/migrate`; run it once against the target
 database before starting or updating the backend. Locally, use `make migrate`.

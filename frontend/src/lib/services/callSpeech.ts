@@ -1,4 +1,4 @@
-import { api, API_BASE } from '$lib/api/client';
+import { api, API_BASE } from '#lib/api/client';
 
 export class CallSpeechService {
 	private recognition: any = null;

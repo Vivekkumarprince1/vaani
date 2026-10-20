@@ -1,6 +1,6 @@
 <script lang="ts">
-	import { chatStore } from '$lib/stores/chat.svelte';
-	import { authStore } from '$lib/stores/auth.svelte';
+	import { chatStore } from '#lib/stores/chat.svelte';
+	import { authStore } from '#lib/stores/auth.svelte';
 	import { X, Users, Search, Check, Plus } from 'lucide-svelte';
 
 	interface Props {

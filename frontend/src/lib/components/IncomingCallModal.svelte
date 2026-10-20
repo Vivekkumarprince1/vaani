@@ -1,7 +1,7 @@
 <script lang="ts">
-	import { callStore } from '$lib/stores/call.svelte';
-	import { callSounds } from '$lib/utils/callSounds';
-	import { api } from '$lib/api/client';
+	import { callStore } from '#lib/stores/call.svelte';
+	import { callSounds } from '#lib/utils/callSounds';
+	import { api } from '#lib/api/client';
 	import { Phone, PhoneOff, Video } from 'lucide-svelte';
 
 	$effect(() => {

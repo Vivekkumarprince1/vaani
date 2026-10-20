@@ -1,6 +1,6 @@
 <script lang="ts">
-	import { chatStore, type Room, type RoomMember } from '$lib/stores/chat.svelte';
-	import { authStore } from '$lib/stores/auth.svelte';
+	import { chatStore, type Room, type RoomMember } from '#lib/stores/chat.svelte';
+	import { authStore } from '#lib/stores/auth.svelte';
 	import { X, Users, Globe, Shield, UserMinus, UserPlus, Trash2, LogOut, Edit2, Check } from 'lucide-svelte';
 
 	interface Props {

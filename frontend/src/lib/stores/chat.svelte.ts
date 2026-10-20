@@ -1,5 +1,5 @@
-import { api } from '$lib/api/client';
-import { wsClient } from '$lib/api/ws';
+import { api } from '#lib/api/client';
+import { wsClient } from '#lib/api/ws';
 
 export interface UserSummary {
 	id: string;

@@ -1,21 +1,22 @@
 <script lang="ts">
 	import './layout.css';
 	import { onMount } from 'svelte';
-	import { authStore } from '$lib/stores/auth.svelte';
-	import { themeStore } from '$lib/stores/theme.svelte';
-	import { callStore } from '$lib/stores/call.svelte';
-	import { chatStore } from '$lib/stores/chat.svelte';
-	import IncomingCallModal from '$lib/components/IncomingCallModal.svelte';
-	import VideoRoom from '$lib/components/VideoRoom.svelte';
+	import { authStore } from '#lib/stores/auth.svelte';
+	import { themeStore } from '#lib/stores/theme.svelte';
+	import { callStore } from '#lib/stores/call.svelte';
+	import { chatStore } from '#lib/stores/chat.svelte';
+	import IncomingCallModal from '#lib/components/IncomingCallModal.svelte';
 	import type { LayoutProps } from './$types';
 
 	let { children }: LayoutProps = $props();
+	let VideoRoomComponent: any = $state(null);
 
-	onMount(() => {
+	onMount(async () => {
 		themeStore.init();
 		authStore.init();
 		callStore.initListeners();
 		chatStore.initListeners();
+		VideoRoomComponent = (await import('#lib/components/VideoRoom.svelte')).default;
 	});
 </script>
 
@@ -30,5 +31,7 @@
 	<IncomingCallModal />
 
 	<!-- Global Unified Video Calling Screen -->
-	<VideoRoom />
+	{#if VideoRoomComponent}
+		<VideoRoomComponent />
+	{/if}
 </div>

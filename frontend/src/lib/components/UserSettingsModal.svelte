@@ -1,9 +1,9 @@
 <script lang="ts">
-	import { authStore } from '$lib/stores/auth.svelte';
-	import { themeStore } from '$lib/stores/theme.svelte';
-	import { settingsStore } from '$lib/stores/settings.svelte';
-	import { callSounds } from '$lib/utils/callSounds';
-	import { api } from '$lib/api/client';
+	import { authStore } from '#lib/stores/auth.svelte';
+	import { themeStore } from '#lib/stores/theme.svelte';
+	import { settingsStore } from '#lib/stores/settings.svelte';
+	import { callSounds } from '#lib/utils/callSounds';
+	import { api } from '#lib/api/client';
 	import {
 		X,
 		User,

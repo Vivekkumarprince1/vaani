@@ -1,8 +1,8 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { Track, ParticipantEvent, type Participant, type RemoteParticipant } from 'livekit-client';
-	import { callStore } from '$lib/stores/call.svelte';
-	import { authStore } from '$lib/stores/auth.svelte';
+	import { callStore } from '#lib/stores/call.svelte';
+	import { authStore } from '#lib/stores/auth.svelte';
 	import { MicOff, VideoOff } from 'lucide-svelte';
 
 	interface Props {

@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { callStore } from '$lib/stores/call.svelte';
+	import { callStore } from '#lib/stores/call.svelte';
 	import { Languages } from 'lucide-svelte';
 
 	// Get latest active subtitles (last 2 for clean readability)

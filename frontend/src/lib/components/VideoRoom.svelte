@@ -1,12 +1,12 @@
 <script lang="ts">
-	import { callStore } from '$lib/stores/call.svelte';
-	import { authStore } from '$lib/stores/auth.svelte';
-	import { chatStore } from '$lib/stores/chat.svelte';
-	import { settingsStore } from '$lib/stores/settings.svelte';
-	import { callSpeechService } from '$lib/services/callSpeech';
+	import { callStore } from '#lib/stores/call.svelte';
+	import { authStore } from '#lib/stores/auth.svelte';
+	import { chatStore } from '#lib/stores/chat.svelte';
+	import { settingsStore } from '#lib/stores/settings.svelte';
+	import { callSpeechService } from '#lib/services/callSpeech';
 	import ParticipantTile from './ParticipantTile.svelte';
 	import LiveSubtitlesOverlay from './LiveSubtitlesOverlay.svelte';
-	import { api } from '$lib/api/client';
+	import { api } from '#lib/api/client';
 	import {
 		Mic,
 		MicOff,

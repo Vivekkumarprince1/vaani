@@ -1,15 +1,15 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { authStore } from '$lib/stores/auth.svelte';
-	import { chatStore, type Room } from '$lib/stores/chat.svelte';
-	import { callStore } from '$lib/stores/call.svelte';
-	import { themeStore } from '$lib/stores/theme.svelte';
-	import { settingsStore } from '$lib/stores/settings.svelte';
-	import { api } from '$lib/api/client';
-	import CreateGroupModal from '$lib/components/CreateGroupModal.svelte';
-	import GroupInfoModal from '$lib/components/GroupInfoModal.svelte';
-	import UserSettingsModal from '$lib/components/UserSettingsModal.svelte';
-	import MeetingModal from '$lib/components/MeetingModal.svelte';
+	import { authStore } from '#lib/stores/auth.svelte';
+	import { chatStore, type Room } from '#lib/stores/chat.svelte';
+	import { callStore } from '#lib/stores/call.svelte';
+	import { themeStore } from '#lib/stores/theme.svelte';
+	import { settingsStore } from '#lib/stores/settings.svelte';
+	import { api } from '#lib/api/client';
+	import CreateGroupModal from '#lib/components/CreateGroupModal.svelte';
+	import GroupInfoModal from '#lib/components/GroupInfoModal.svelte';
+	import UserSettingsModal from '#lib/components/UserSettingsModal.svelte';
+	import MeetingModal from '#lib/components/MeetingModal.svelte';
 	import {
 		Video,
 		Phone,

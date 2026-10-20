@@ -1,7 +1,7 @@
 <script lang="ts">
-	import { authStore } from '$lib/stores/auth.svelte';
-	import { callStore } from '$lib/stores/call.svelte';
-	import { api } from '$lib/api/client';
+	import { authStore } from '#lib/stores/auth.svelte';
+	import { callStore } from '#lib/stores/call.svelte';
+	import { api } from '#lib/api/client';
 	import { goto } from '$app/navigation';
 	import {
 		X,

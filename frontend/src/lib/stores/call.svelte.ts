@@ -7,12 +7,12 @@ import {
 	type LocalParticipant,
 	type LocalVideoTrack
 } from 'livekit-client';
-import { api } from '$lib/api/client';
-import { wsClient } from '$lib/api/ws';
-import { callSounds } from '$lib/utils/callSounds';
-import { callSpeechService } from '$lib/services/callSpeech';
-import { authStore } from '$lib/stores/auth.svelte';
-import { settingsStore } from '$lib/stores/settings.svelte';
+import { api } from '#lib/api/client';
+import { wsClient } from '#lib/api/ws';
+import { callSounds } from '#lib/utils/callSounds';
+import { callSpeechService } from '#lib/services/callSpeech';
+import { authStore } from '#lib/stores/auth.svelte';
+import { settingsStore } from '#lib/stores/settings.svelte';
 
 export interface Subtitle {
 	id: string;

@@ -2,10 +2,10 @@
 	import { onMount, onDestroy } from 'svelte';
 	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
-	import { authStore } from '$lib/stores/auth.svelte';
-	import { callStore } from '$lib/stores/call.svelte';
-	import { themeStore } from '$lib/stores/theme.svelte';
-	import { api } from '$lib/api/client';
+	import { authStore } from '#lib/stores/auth.svelte';
+	import { callStore } from '#lib/stores/call.svelte';
+	import { themeStore } from '#lib/stores/theme.svelte';
+	import { api } from '#lib/api/client';
 	import {
 		Video,
 		VideoOff,

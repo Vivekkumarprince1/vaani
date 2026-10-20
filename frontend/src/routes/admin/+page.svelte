@@ -1,9 +1,9 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { api } from '$lib/api/client';
-	import { authStore } from '$lib/stores/auth.svelte';
-	import { themeStore } from '$lib/stores/theme.svelte';
-	import ProvidersTab from '$lib/components/admin/ProvidersTab.svelte';
+	import { api } from '#lib/api/client';
+	import { authStore } from '#lib/stores/auth.svelte';
+	import { themeStore } from '#lib/stores/theme.svelte';
+	import ProvidersTab from '#lib/components/admin/ProvidersTab.svelte';
 	import {
 		Cpu,
 		Sliders,

@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { authStore } from '$lib/stores/auth.svelte';
+	import { authStore } from '#lib/stores/auth.svelte';
 	import { goto } from '$app/navigation';
 	import { Sparkles, ArrowRight, Lock, User as UserIcon } from 'lucide-svelte';
 

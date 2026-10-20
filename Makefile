@@ -1,10 +1,13 @@
-.PHONY: backend frontend dev install-all test
+.PHONY: backend frontend dev install-all test migrate
 
 backend:
 	cd backend && go run ./cmd/server
 
 frontend:
 	cd frontend && npm run dev
+
+migrate:
+	cd backend && go run ./cmd/migrate
 
 install-all:
 	cd backend && go mod tidy

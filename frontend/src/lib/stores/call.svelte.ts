@@ -139,7 +139,10 @@ class CallStore {
 			const res = await api.post('/calls/token', { room_slug: callRoomId });
 			const { token, url } = res.data;
 
-			const livekitUrl = url || import.meta.env.VITE_LIVEKIT_URL || 'wss://vaani-eigmeqwu.livekit.cloud';
+			const livekitUrl = url || import.meta.env.VITE_LIVEKIT_URL;
+			if (!livekitUrl) {
+				throw new Error('LiveKit URL is not configured');
+			}
 
 			// 2. Connect to LiveKit Room
 			const room = new Room({

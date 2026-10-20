@@ -128,7 +128,24 @@ func main() {
 	// Health Check
 	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprintf(w, `{"status":"ok","version":"2.0.0","engine":"golang"}`)
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprint(w, `{"status":"ok","version":"2.0.0","engine":"golang"}`)
+	})
+
+	// Readiness Check: only reports ready after PostgreSQL is reachable.
+	r.Get("/ready", func(w http.ResponseWriter, r *http.Request) {
+		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+		defer cancel()
+		if err := db.Pool.Ping(ctx); err != nil {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusServiceUnavailable)
+			fmt.Fprint(w, `{"status":"not_ready","dependency":"postgres"}`)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprint(w, `{"status":"ready","dependency":"postgres"}`)
 	})
 
 	// WebSocket Endpoint

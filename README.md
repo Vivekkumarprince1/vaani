@@ -68,20 +68,13 @@ by the Go `backend/` and Svelte `frontend/` applications. The old directories
 should not be restored during future fixes; use the v2 implementation and
 migration schema as the source of truth.
 
-## Production deployment
+## OCI production deployment
 
-The repository includes production Dockerfiles and Railway configuration for
-separate backend and frontend services. Create a PostgreSQL service, a Redis
-service, and a LiveKit Cloud project first. Then deploy the services from the
-`v2` branch:
+The repository includes production Dockerfiles for separate backend and
+frontend containers. The recommended OCI layout is OCI Container Instances
+with images stored in OCIR, OCI Database with PostgreSQL, OCI Cache with Redis,
+and LiveKit Cloud. Follow the deployment runbook in `infra/oci/README.md`.
 
-1. Backend service: use `/backend/railway.toml` and set the variables listed in
-   `backend/.env.example`. Railway runs `/app/migrate` before starting the API.
-2. Frontend service: use `/frontend/railway.toml` and provide the build-time
-   variables from `frontend/.env.example`.
-3. Set `ALLOWED_ORIGINS` on the backend to the exact frontend HTTPS origin.
-4. Verify `GET /health` on the backend and `GET /ready` after the database is
-   attached. The frontend exposes `GET /health` as well.
-
-Run migrations locally with `make migrate`. Never commit real `.env` files or
-production credentials.
+The backend migration image is `/app/migrate`; run it once against the target
+database before starting or updating the backend. Locally, use `make migrate`.
+Never commit real `.env` files or production credentials.

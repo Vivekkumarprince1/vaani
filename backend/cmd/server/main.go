@@ -31,6 +31,9 @@ func main() {
 
 	// 1. Load Environment
 	env := config.LoadEnv()
+	if err := env.Validate(); err != nil {
+		log.Fatalf("❌ Invalid environment configuration: %v", err)
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -71,18 +74,10 @@ func main() {
 		log.Printf("⚠️  ProviderManager init warning: %v", err)
 	}
 
-	// 8. WebSocket Hub
-	hub := ws.NewHub(rdb)
-	go hub.Run()
-
-	// 9. Auth & Handlers
+	// 8. Authenticator
 	authenticator := auth.NewAuthenticator(env.JWTSecret)
-	authHandler := handlers.NewAuthHandler(db, authenticator)
-	adminHandler := handlers.NewAdminHandler(db, rdb, configEngine, livekitMgr, providerMgr)
-	chatHandler := handlers.NewChatHandler(db, hub, providerMgr)
-	callHandler := handlers.NewCallHandler(db, hub, livekitMgr, providerMgr)
 
-	// 10. HTTP Router
+	// 9. HTTP Router
 	r := chi.NewRouter()
 
 	// Standard Middlewares
@@ -107,6 +102,16 @@ func main() {
 		allowedOrigins = []string{"http://localhost:5173", "http://localhost:3000"}
 	}
 
+	// 10. WebSocket Hub (origin policy is shared with HTTP CORS policy)
+	hub := ws.NewHub(rdb, allowedOrigins...)
+	go hub.Run()
+
+	// 11. Auth & Handlers
+	authHandler := handlers.NewAuthHandler(db, authenticator)
+	adminHandler := handlers.NewAdminHandler(db, rdb, configEngine, livekitMgr, providerMgr)
+	chatHandler := handlers.NewChatHandler(db, hub, providerMgr)
+	callHandler := handlers.NewCallHandler(db, hub, livekitMgr, providerMgr)
+
 	r.Use(cors.Handler(cors.Options{
 		AllowedOrigins:   allowedOrigins,
 		AllowedMethods:   []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
@@ -118,6 +123,7 @@ func main() {
 
 	// Token bucket rate limiter for auth endpoints (5 req/sec with burst of 15 per IP)
 	authLimiter := auth.NewIPRateLimiter(5.0, 15)
+	ttsLimiter := auth.NewIPRateLimiter(2.0, 10)
 
 	// Health Check
 	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
@@ -166,8 +172,8 @@ func main() {
 
 		// Calls
 		api.Route("/calls", func(c chi.Router) {
-			// Public TTS streaming endpoint for <audio> elements
-			c.With(authenticator.OptionalMiddleware).Get("/tts", callHandler.HandleTTS)
+			// TTS can incur provider charges, so it requires auth and is rate-limited.
+			c.With(authenticator.Middleware, ttsLimiter.Limit).Get("/tts", callHandler.HandleTTS)
 
 			// Protected Call Actions
 			c.Group(func(p chi.Router) {
@@ -268,16 +274,15 @@ func seedSuperadmin(ctx context.Context, db *database.DB, env config.EnvConfig) 
 
 func seedInitialSettings(ctx context.Context, db *database.DB, cfg *config.ConfigEngine) error {
 	dynamic := cfg.GetDynamic()
-	categories := []string{"providers", "audio_dsp", "feature_flags", "languages"}
+	// ProviderManager owns provider categories. ConfigEngine owns only
+	// audio, feature flags, and language settings.
+	categories := []string{"audio_dsp", "feature_flags", "languages"}
 
 	for _, cat := range categories {
 		var activeKey string
 		var configData interface{}
 
 		switch cat {
-		case "providers":
-			activeKey = dynamic.Providers.ActiveSTT
-			configData = dynamic.Providers
 		case "audio_dsp":
 			activeKey = "default"
 			configData = dynamic.AudioDSP

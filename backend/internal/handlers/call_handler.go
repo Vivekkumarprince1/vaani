@@ -953,37 +953,18 @@ func (h *CallHandler) HandleTTS(w http.ResponseWriter, r *http.Request) {
 		text = text[:400]
 	}
 
-	if h.providerMgr != nil {
-		audioBytes, mimeType, err := h.providerMgr.SynthesizeSpeech(r.Context(), text, lang)
-		if err == nil && len(audioBytes) > 0 {
-			w.Header().Set("Content-Type", mimeType)
-			w.Header().Set("Cache-Control", "public, max-age=86400")
-			_, _ = w.Write(audioBytes)
-			return
-		}
-	}
-
-	// Fallback to Google TTS
-	ttsURL := fmt.Sprintf("https://translate.google.com/translate_tts?ie=UTF-8&tl=%s&client=tw-ob&q=%s",
-		url.QueryEscape(lang),
-		url.QueryEscape(text),
-	)
-
-	req, err := http.NewRequestWithContext(r.Context(), "GET", ttsURL, nil)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+	if h.providerMgr == nil {
+		http.Error(w, `{"error":"TTS provider unavailable"}`, http.StatusServiceUnavailable)
 		return
 	}
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36")
 
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil || resp.StatusCode != http.StatusOK {
-		http.Error(w, `{"error":"TTS service unavailable"}`, http.StatusBadGateway)
+	audioBytes, mimeType, err := h.providerMgr.SynthesizeSpeech(r.Context(), text, lang)
+	if err != nil || len(audioBytes) == 0 {
+		http.Error(w, `{"error":"TTS provider unavailable"}`, http.StatusBadGateway)
 		return
 	}
-	defer resp.Body.Close()
 
-	w.Header().Set("Content-Type", "audio/mpeg")
-	w.Header().Set("Cache-Control", "public, max-age=86400")
-	_, _ = io.Copy(w, resp.Body)
+	w.Header().Set("Content-Type", mimeType)
+	w.Header().Set("Cache-Control", "private, max-age=86400")
+	_, _ = w.Write(audioBytes)
 }

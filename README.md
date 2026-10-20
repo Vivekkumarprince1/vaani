@@ -54,8 +54,16 @@ npm run dev
 
 ---
 
-## 🔑 Default Superadmin Account
-The server auto-bootstraps the superadmin account upon initial boot:
-* **Email**: `admin@vaani.internal`
-* **Password**: `Admin@Vaani2026`
-* **Role**: `superadmin`
+## 🔑 Superadmin Bootstrap
+
+The server auto-bootstraps the superadmin account upon initial boot using
+`SUPERADMIN_EMAIL`, `SUPERADMIN_USERNAME`, and `SUPERADMIN_PASSWORD` from the
+environment. There is no hard-coded default password.
+
+## Repository migration status
+
+The `v2` branch is the active production-hardening baseline. The former
+JavaScript `client/` and `server/` applications were intentionally replaced
+by the Go `backend/` and Svelte `frontend/` applications. The old directories
+should not be restored during future fixes; use the v2 implementation and
+migration schema as the source of truth.

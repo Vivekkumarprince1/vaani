@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"net/url"
 	"sync"
 	"time"
 
@@ -15,9 +16,6 @@ import (
 )
 
 var upgrader = websocket.Upgrader{
-	CheckOrigin: func(r *http.Request) bool {
-		return true // Configurable via allowed origins
-	},
 	ReadBufferSize:  1024 * 16,
 	WriteBufferSize: 1024 * 16,
 }
@@ -39,22 +37,45 @@ type Client struct {
 }
 
 type Hub struct {
-	mu         sync.RWMutex
-	clients    map[uuid.UUID]map[*Client]bool // UserID -> set of client connections (multi-device)
-	broadcast  chan []byte
-	register   chan *Client
-	unregister chan *Client
-	redis      *redis.Client
+	mu             sync.RWMutex
+	clients        map[uuid.UUID]map[*Client]bool // UserID -> set of client connections (multi-device)
+	broadcast      chan []byte
+	register       chan *Client
+	unregister     chan *Client
+	redis          *redis.Client
+	allowedOrigins map[string]struct{}
 }
 
-func NewHub(rdb *redis.Client) *Hub {
-	return &Hub{
-		clients:    make(map[uuid.UUID]map[*Client]bool),
-		broadcast:  make(chan []byte, 256),
-		register:   make(chan *Client),
-		unregister: make(chan *Client),
-		redis:      rdb,
+func NewHub(rdb *redis.Client, origins ...string) *Hub {
+	allowed := make(map[string]struct{}, len(origins))
+	for _, origin := range origins {
+		if origin != "" {
+			allowed[origin] = struct{}{}
+		}
 	}
+	return &Hub{
+		clients:        make(map[uuid.UUID]map[*Client]bool),
+		broadcast:      make(chan []byte, 256),
+		register:       make(chan *Client),
+		unregister:     make(chan *Client),
+		redis:          rdb,
+		allowedOrigins: allowed,
+	}
+}
+
+func (h *Hub) isAllowedOrigin(r *http.Request) bool {
+	origin := r.Header.Get("Origin")
+	if origin == "" {
+		// Non-browser clients do not send Origin. The endpoint still requires a
+		// valid JWT, so allow those clients while validating browser origins.
+		return true
+	}
+	parsed, err := url.Parse(origin)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return false
+	}
+	_, ok := h.allowedOrigins[parsed.Scheme+"://"+parsed.Host]
+	return ok
 }
 
 func (h *Hub) Run() {
@@ -144,6 +165,11 @@ func (h *Hub) BroadcastEvent(eventType string, payload interface{}) {
 
 // ServeWS handles WebSocket upgrading and attaches client to hub
 func (h *Hub) ServeWS(w http.ResponseWriter, r *http.Request, authenticator *auth.Authenticator) {
+	if !h.isAllowedOrigin(r) {
+		http.Error(w, "forbidden origin", http.StatusForbidden)
+		return
+	}
+
 	token := r.URL.Query().Get("token")
 	if token == "" {
 		http.Error(w, "missing token", http.StatusUnauthorized)

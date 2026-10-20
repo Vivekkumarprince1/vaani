@@ -481,35 +481,39 @@ export class CallSpeechService {
 	speak(text: string, language: string, audioUrl?: string) {
 		if (typeof window === 'undefined' || !text) return;
 
-		// 1. Try server neural TTS audio stream first (Google Universal Neural TTS / Deepgram Aura / ElevenLabs)
+		// 1. Try authenticated server-side neural TTS. Fetching the bytes explicitly
+		// lets us keep the JWT in an Authorization header instead of leaking it in
+		// an audio URL/query string.
 		if (audioUrl) {
-			try {
-				const base = API_BASE.replace(/\/api\/?$/, '');
-				const fullUrl = audioUrl.startsWith('http')
-					? audioUrl
-					: `${base}${audioUrl.startsWith('/') ? '' : '/'}${audioUrl}`;
-
-				const audio = new Audio(fullUrl);
-				audio.volume = 1.0;
-				const playPromise = audio.play();
-				if (playPromise !== undefined) {
-					playPromise
-						.then(() => {
-							console.log('🔊 Played TTS audio successfully:', fullUrl);
-						})
-						.catch((e) => {
-							console.warn('Audio playback error, using speech synthesis fallback:', e);
-							this.speakBrowser(text, language);
-						});
-					return;
-				}
-			} catch (e) {
-				console.warn('Failed to initialize Audio, using speech synthesis fallback:', e);
-			}
+			this.playServerTTS(text, language, audioUrl);
+			return;
 		}
 
 		// 2. Fallback to browser SpeechSynthesis
 		this.speakBrowser(text, language);
+	}
+
+	private async playServerTTS(text: string, language: string, audioUrl: string) {
+		try {
+			const base = API_BASE.replace(/\/api\/?$/, '');
+			const fullUrl = audioUrl.startsWith('http')
+				? audioUrl
+				: `${base}${audioUrl.startsWith('/') ? '' : '/'}${audioUrl}`;
+			const token = localStorage.getItem('vaani_token');
+			const response = await fetch(fullUrl, {
+				headers: token ? { Authorization: `Bearer ${token}` } : {}
+			});
+			if (!response.ok) throw new Error(`TTS request failed: ${response.status}`);
+
+			const objectUrl = URL.createObjectURL(await response.blob());
+			const audio = new Audio(objectUrl);
+			audio.volume = 1.0;
+			audio.onended = () => URL.revokeObjectURL(objectUrl);
+			await audio.play();
+		} catch (err) {
+			console.warn('Server TTS unavailable, using speech synthesis fallback:', err);
+			this.speakBrowser(text, language);
+		}
 	}
 
 	private speakBrowser(text: string, language: string) {

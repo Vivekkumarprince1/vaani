@@ -6,9 +6,9 @@ import (
 	"log"
 	"time"
 
-	lksdk "github.com/livekit/server-sdk-go/v2"
 	"github.com/livekit/protocol/auth"
 	"github.com/livekit/protocol/livekit"
+	lksdk "github.com/livekit/server-sdk-go/v2"
 )
 
 type Manager struct {
@@ -66,17 +66,28 @@ func (m *Manager) GenerateToken(roomSlug, identity, name, metadata string) (stri
 
 // EnsureRoom ensures the LiveKit room exists
 func (m *Manager) EnsureRoom(ctx context.Context, roomSlug string) error {
-	if m.roomCli == nil {
+	if m.roomCli == nil || roomSlug == "" {
 		return nil
 	}
 
-	_, err := m.roomCli.CreateRoom(ctx, &livekit.CreateRoomRequest{
+	rooms, err := m.roomCli.ListRooms(ctx, &livekit.ListRoomsRequest{})
+	if err != nil {
+		return fmt.Errorf("list LiveKit rooms: %w", err)
+	}
+	for _, room := range rooms.Rooms {
+		if room != nil && room.Name == roomSlug {
+			return nil
+		}
+	}
+
+	_, err = m.roomCli.CreateRoom(ctx, &livekit.CreateRoomRequest{
 		Name:            roomSlug,
 		EmptyTimeout:    300, // 5 minutes
 		MaxParticipants: 100,
 	})
 	if err != nil {
-		log.Printf("LiveKit ensure room notice: %v", err)
+		log.Printf("LiveKit ensure room failed: %v", err)
+		return err
 	}
 	return nil
 }
@@ -113,4 +124,3 @@ func (m *Manager) ListRooms(ctx context.Context) ([]*livekit.Room, error) {
 	}
 	return res.Rooms, nil
 }
-

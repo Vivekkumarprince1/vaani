@@ -22,22 +22,22 @@ import (
 
 // EnvConfig holds immutable boot-time environment variables
 type EnvConfig struct {
-	Port                 string
-	Env                  string
-	AllowedOrigins       string
-	DatabaseURL          string
-	RedisURL             string
-	JWTSecret            string
-	ConfigEncryptionKey  string
-	SuperadminEmail      string
-	SuperadminPassword   string
-	SuperadminUsername   string
-	LiveKitURL           string
-	LiveKitAPIKey        string
-	LiveKitAPISecret     string
-	CloudinaryCloudName  string
-	CloudinaryAPIKey     string
-	CloudinaryAPISecret  string
+	Port                string
+	Env                 string
+	AllowedOrigins      string
+	DatabaseURL         string
+	RedisURL            string
+	JWTSecret           string
+	ConfigEncryptionKey string
+	SuperadminEmail     string
+	SuperadminPassword  string
+	SuperadminUsername  string
+	LiveKitURL          string
+	LiveKitAPIKey       string
+	LiveKitAPISecret    string
+	CloudinaryCloudName string
+	CloudinaryAPIKey    string
+	CloudinaryAPISecret string
 }
 
 // DynamicConfig holds admin-controlled settings that hot-reload in memory
@@ -49,12 +49,12 @@ type DynamicConfig struct {
 }
 
 type ProvidersConfig struct {
-	ActiveSTT         string `json:"active_stt"`         // azure, deepgram, groq, openai, nvidia
-	ActiveTranslation string `json:"active_translation"` // azure, groq, openai, openrouter, google
-	ActiveTTS         string `json:"active_tts"`         // azure, elevenlabs, openai, nvidia
-	ActiveRealtime    string `json:"active_realtime"`    // openai_realtime
-	ActiveSFU         string `json:"active_sfu"`         // livekit
-	ProvidersData     map[string]map[string]interface{} `json:"providers_data"` // encrypted keys & options
+	ActiveSTT         string                            `json:"active_stt"`         // azure, deepgram, groq, openai, nvidia
+	ActiveTranslation string                            `json:"active_translation"` // azure, groq, openai, openrouter, google
+	ActiveTTS         string                            `json:"active_tts"`         // azure, elevenlabs, openai, nvidia
+	ActiveRealtime    string                            `json:"active_realtime"`    // openai_realtime
+	ActiveSFU         string                            `json:"active_sfu"`         // livekit
+	ProvidersData     map[string]map[string]interface{} `json:"providers_data"`     // encrypted keys & options
 }
 
 type AudioDSPConfig struct {
@@ -112,10 +112,10 @@ func LoadEnv() EnvConfig {
 		AllowedOrigins:      getEnv("ALLOWED_ORIGINS", "http://localhost:5173,http://localhost:3000"),
 		DatabaseURL:         getEnv("DATABASE_URL", "postgres://vivekkumar@localhost:5432/vaani_v2?sslmode=disable"),
 		RedisURL:            getEnv("REDIS_URL", "redis://localhost:6379"),
-		JWTSecret:           getEnv("JWT_SECRET", "vaani_super_secret_jwt_key_at_least_32_chars!"),
-		ConfigEncryptionKey: getEnv("CONFIG_ENCRYPTION_KEY", "vaani_32_byte_aes_secret_key!26"),
+		JWTSecret:           getEnv("JWT_SECRET", ""),
+		ConfigEncryptionKey: getEnv("CONFIG_ENCRYPTION_KEY", ""),
 		SuperadminEmail:     getEnv("SUPERADMIN_EMAIL", "admin@vaani.internal"),
-		SuperadminPassword:  getEnv("SUPERADMIN_PASSWORD", "Admin@Vaani2026"),
+		SuperadminPassword:  getEnv("SUPERADMIN_PASSWORD", ""),
 		SuperadminUsername:  getEnv("SUPERADMIN_USERNAME", "superadmin"),
 		LiveKitURL:          getEnv("LIVEKIT_URL", ""),
 		LiveKitAPIKey:       getEnv("LIVEKIT_API_KEY", ""),
@@ -124,6 +124,39 @@ func LoadEnv() EnvConfig {
 		CloudinaryAPIKey:    getEnv("CLOUDINARY_API_KEY", ""),
 		CloudinaryAPISecret: getEnv("CLOUDINARY_API_SECRET", ""),
 	}
+}
+
+// Validate rejects insecure or incomplete boot configuration before any
+// database/provider initialization occurs. Secrets intentionally have no
+// development fallback: a deployment must provide them explicitly.
+func (e EnvConfig) Validate() error {
+	if e.JWTSecret == "" {
+		return errors.New("JWT_SECRET is required")
+	}
+	if len(e.JWTSecret) < 32 {
+		return errors.New("JWT_SECRET must be at least 32 characters")
+	}
+	if e.ConfigEncryptionKey == "" {
+		return errors.New("CONFIG_ENCRYPTION_KEY is required")
+	}
+	if len(e.ConfigEncryptionKey) < 32 {
+		return errors.New("CONFIG_ENCRYPTION_KEY must be at least 32 characters")
+	}
+	if e.SuperadminPassword == "" {
+		return errors.New("SUPERADMIN_PASSWORD is required")
+	}
+	if len(e.SuperadminPassword) < 12 {
+		return errors.New("SUPERADMIN_PASSWORD must be at least 12 characters")
+	}
+	if e.Env == "production" {
+		if e.AllowedOrigins == "" {
+			return errors.New("ALLOWED_ORIGINS is required in production")
+		}
+		if e.LiveKitURL == "" || e.LiveKitAPIKey == "" || e.LiveKitAPISecret == "" {
+			return errors.New("LIVEKIT_URL, LIVEKIT_API_KEY and LIVEKIT_API_SECRET are required in production")
+		}
+	}
+	return nil
 }
 
 func NewConfigEngine(env EnvConfig, db *database.DB, rdb *redis.Client) *ConfigEngine {
@@ -210,11 +243,11 @@ func (e *ConfigEngine) LoadFromDB(ctx context.Context) error {
 
 		switch category {
 		case "providers":
-			var prov ProvidersConfig
-			if err := json.Unmarshal(rawConfig, &prov); err == nil {
-				e.Dynamic.Providers = prov
-				e.Dynamic.Providers.ActiveSTT = activeKey
-			}
+			// ProviderManager is the single source of truth for provider
+			// catalogs, credentials, and active provider selection. Keep this
+			// legacy category ignored so its generic catalog cannot overwrite
+			// the typed dynamic settings in this engine.
+			continue
 		case "audio_dsp":
 			var dsp AudioDSPConfig
 			if err := json.Unmarshal(rawConfig, &dsp); err == nil {

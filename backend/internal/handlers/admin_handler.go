@@ -552,6 +552,10 @@ func (h *AdminHandler) UpdateConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	category := chi.URLParam(r, "category")
+	if category == "providers" {
+		http.Error(w, `{"error":"provider settings must be updated through /admin/providers"}`, http.StatusBadRequest)
+		return
+	}
 
 	var body struct {
 		ActiveKey string          `json:"active_key"`

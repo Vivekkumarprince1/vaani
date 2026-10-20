@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	"errors"
+	"net"
 	"net/http"
 	"strings"
 	"sync"
@@ -225,6 +226,9 @@ func (limiter *IPRateLimiter) Limit(next http.Handler) http.Handler {
 		ip := r.RemoteAddr
 		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
 			ip = strings.TrimSpace(strings.Split(xff, ",")[0])
+		}
+		if host, _, err := net.SplitHostPort(ip); err == nil {
+			ip = host
 		}
 
 		limiter.mu.Lock()

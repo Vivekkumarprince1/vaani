@@ -32,3 +32,4 @@ dist-ssr
 
 # Generated build artifacts
 backend/bin/server
+.vercel/

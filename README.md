@@ -52,6 +52,121 @@ npm run dev
 ```
 *Frontend runs on `http://localhost:5173`*
 
+## Environment and secret management
+
+Use `backend/.env.example` as the variable reference. Do not copy production
+values into Git, `.env` files in the repository, GitHub logs, Vercel build
+logs, or chat messages.
+
+### Backend variable groups
+
+Required at backend startup:
+
+| Variable | Purpose |
+| --- | --- |
+| `ENV` | Runtime environment; use `production` on OCI. |
+| `PORT` | HTTP port; production uses `8080`. |
+| `DATABASE_URL` | PostgreSQL connection string. Keep the database private. |
+| `REDIS_URL` | Redis connection string for cache, presence, and pub/sub. |
+| `JWT_SECRET` | At least 32 random characters for API tokens. |
+| `CONFIG_ENCRYPTION_KEY` | At least 32 random characters for encrypted provider configuration. |
+| `SUPERADMIN_USERNAME` | Initial superadmin username. |
+| `SUPERADMIN_EMAIL` | Initial superadmin email. |
+| `SUPERADMIN_PASSWORD` | Strong initial superadmin password. |
+| `ALLOWED_ORIGINS` | Comma-separated exact browser origins allowed by API/CORS. |
+| `ALLOWED_ORIGIN_SUFFIXES` | Optional scoped Vercel preview suffixes, for example `-your-team.vercel.app`; only hosts beginning with `vaani-` match. |
+| `LIVEKIT_URL` | LiveKit Cloud WebSocket URL. |
+| `LIVEKIT_API_KEY` | LiveKit server API key. |
+| `LIVEKIT_API_SECRET` | LiveKit server API secret. |
+
+Optional integrations such as Cloudinary are listed in
+`backend/.env.example`. Provider credentials are normally managed from the
+encrypted Admin Control Room and are not placed in the frontend.
+
+Generate strong values locally:
+
+```bash
+openssl rand -hex 32   # JWT_SECRET
+openssl rand -hex 32   # CONFIG_ENCRYPTION_KEY
+```
+
+### Production backend environment on OCI
+
+The live backend reads its environment from `/etc/vaani/backend.env` through
+the systemd unit `vaani-backend.service`. The file must stay on the OCI VM,
+owned by root, and must not be copied through GitHub Actions.
+
+```bash
+ssh -i ~/.ssh/vaani-api.key ubuntu@92.4.68.46
+
+# Edit securely; do not print the file
+sudoedit /etc/vaani/backend.env
+
+# Apply changes
+sudo systemctl daemon-reload
+sudo systemctl restart vaani-backend
+sudo systemctl status vaani-backend --no-pager
+```
+
+Verify only variable names are present, without exposing values:
+
+```bash
+sudo grep -E '^(ENV|PORT|DATABASE_URL|REDIS_URL|JWT_SECRET|CONFIG_ENCRYPTION_KEY|SUPERADMIN_|ALLOWED_ORIGINS|ALLOWED_ORIGIN_SUFFIXES|LIVEKIT_)=' \
+  /etc/vaani/backend.env | sed 's/=.*$/=<set>/'
+```
+
+After an environment change, verify the service and dependencies:
+
+```bash
+curl -fsS https://vaani-bc.fmpg.in/health
+curl -fsS https://vaani-bc.fmpg.in/ready
+sudo journalctl -u vaani-backend -n 100 --no-pager
+```
+
+`ALLOWED_ORIGINS` must contain the production frontend origin exactly:
+
+```text
+https://vaani-ten-phi.vercel.app
+```
+
+If Vercel preview deployments are needed, configure a narrowly scoped
+`ALLOWED_ORIGIN_SUFFIXES` value. Never use a global `*.vercel.app` rule.
+
+### Frontend environment on Vercel
+
+Frontend `VITE_*` variables are public and are bundled into browser JavaScript;
+they must never contain secrets. In the Vercel project `vaani`, configure:
+
+```text
+VITE_API_BASE=https://vaani-bc.fmpg.in/api
+VITE_WS_BASE=wss://vaani-bc.fmpg.in/ws
+VITE_LIVEKIT_URL=wss://vaani-eigmeqwu.livekit.cloud
+```
+
+Set them for the required Vercel environments (Production, Preview, and
+Development), then create a new deployment. Backend secrets do not belong in
+Vercel.
+
+### GitHub Actions environment
+
+The backend workflow uses the protected GitHub environment `vaani-v2` for
+deployment approval/context. The current self-hosted OCI runner deploys
+artifacts directly on the VM and does not transfer `/etc/vaani/backend.env`.
+Changing an application secret therefore requires editing the OCI env file
+and restarting the service; changing code requires pushing to `v2`.
+
+### Rotation rules
+
+- Rotate `JWT_SECRET` when tokens may be exposed; all existing login tokens
+  will become invalid and users must log in again.
+- Rotate provider and LiveKit keys at their provider, then update the OCI env
+  or encrypted Admin Control Room configuration as appropriate.
+- Change the superadmin password through the authenticated admin flow when
+  available. `SUPERADMIN_PASSWORD` is the bootstrap input and is not a safe
+  substitute for a password-management workflow for an existing account.
+- After every rotation, restart the backend and run `/health`, `/ready`, login,
+  and WebSocket smoke checks.
+
 ---
 
 ## 🔑 Superadmin Bootstrap

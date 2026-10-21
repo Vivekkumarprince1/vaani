@@ -66,8 +66,8 @@ jobs:
           OCI_KNOWN_HOSTS: ${{ secrets.OCI_KNOWN_HOSTS }}
         run: |
           install -d -m 700 "$HOME/.ssh"
-          eval "$(ssh-agent -s)"
-          printf '%s\n' "$OCI_SSH_KEY" | ssh-add -
+          printf '%s\n' "$OCI_SSH_KEY" > "$HOME/.ssh/oci_deploy_key"
+          chmod 600 "$HOME/.ssh/oci_deploy_key"
           printf '%s\n' "$OCI_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
           chmod 600 "$HOME/.ssh/known_hosts"
 
@@ -76,7 +76,8 @@ jobs:
           OCI_HOST: ${{ secrets.OCI_HOST }}
           OCI_USER: ${{ secrets.OCI_USER }}
         run: |
-          scp release/server-release release/migrate-release release/migrations/*.sql \
+          scp -i "$HOME/.ssh/oci_deploy_key" -o IdentitiesOnly=yes \
+            release/server-release release/migrate-release release/migrations/*.sql \
             "$OCI_USER@$OCI_HOST:/tmp/"
 
       - name: Install, migrate, restart, and smoke test
@@ -84,7 +85,7 @@ jobs:
           OCI_HOST: ${{ secrets.OCI_HOST }}
           OCI_USER: ${{ secrets.OCI_USER }}
         run: |
-          ssh "$OCI_USER@$OCI_HOST" 'bash -s' <<'REMOTE'
+          ssh -i "$HOME/.ssh/oci_deploy_key" -o IdentitiesOnly=yes "$OCI_USER@$OCI_HOST" 'bash -s' <<'REMOTE'
           set -euo pipefail
 
           sudo install -o vaani -g vaani -m 0755 /tmp/server-release /opt/vaani/server.next

@@ -18,6 +18,7 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
 
@@ -52,7 +53,8 @@ jobs:
 
   deploy:
     needs: build
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, vaani-oci]
+    timeout-minutes: 15
     environment: vaani-v2
     steps:
       - uses: actions/download-artifact@v4
@@ -60,38 +62,14 @@ jobs:
           name: backend-${{ github.sha }}
           path: release
 
-      - name: Configure SSH
-        env:
-          OCI_SSH_KEY: ${{ secrets.OCI_SSH_KEY }}
-          OCI_KNOWN_HOSTS: ${{ secrets.OCI_KNOWN_HOSTS }}
-        run: |
-          install -d -m 700 "$HOME/.ssh"
-          printf '%s\n' "$OCI_SSH_KEY" > "$HOME/.ssh/oci_deploy_key"
-          chmod 600 "$HOME/.ssh/oci_deploy_key"
-          printf '%s\n' "$OCI_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
-          chmod 600 "$HOME/.ssh/known_hosts"
-
-      - name: Upload release to OCI
-        env:
-          OCI_HOST: ${{ secrets.OCI_HOST }}
-          OCI_USER: ${{ secrets.OCI_USER }}
-        run: |
-          scp -i "$HOME/.ssh/oci_deploy_key" -o IdentitiesOnly=yes \
-            release/server-release release/migrate-release release/migrations/*.sql \
-            "$OCI_USER@$OCI_HOST:/tmp/"
-
       - name: Install, migrate, restart, and smoke test
-        env:
-          OCI_HOST: ${{ secrets.OCI_HOST }}
-          OCI_USER: ${{ secrets.OCI_USER }}
         run: |
-          ssh -i "$HOME/.ssh/oci_deploy_key" -o IdentitiesOnly=yes "$OCI_USER@$OCI_HOST" 'bash -s' <<'REMOTE'
           set -euo pipefail
 
-          sudo install -o vaani -g vaani -m 0755 /tmp/server-release /opt/vaani/server.next
-          sudo install -o vaani -g vaani -m 0755 /tmp/migrate-release /opt/vaani/migrate.next
+          sudo install -o vaani -g vaani -m 0755 release/server-release /opt/vaani/server.next
+          sudo install -o vaani -g vaani -m 0755 release/migrate-release /opt/vaani/migrate.next
           sudo install -d -o vaani -g vaani -m 0755 /opt/vaani/migrations
-          sudo install -o vaani -g vaani -m 0644 /tmp/001_init_schema.sql /opt/vaani/migrations/001_init_schema.sql
+          sudo install -o vaani -g vaani -m 0644 release/migrations/*.sql /opt/vaani/migrations/
 
           sudo -u vaani bash -c 'set -a; . /etc/vaani/backend.env; set +a; cd /opt/vaani; MIGRATIONS_DIR=/opt/vaani/migrations /opt/vaani/migrate.next'
 
@@ -107,4 +85,3 @@ jobs:
           done
           sudo systemctl --no-pager --full status vaani-backend
           exit 1
-          REMOTE

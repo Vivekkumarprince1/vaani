@@ -70,11 +70,116 @@ migration schema as the source of truth.
 
 ## OCI production deployment
 
-The frontend deploys to Vercel and the backend runs in an OCI Container
-Instance with its image stored in OCIR. PostgreSQL and Redis use OCI managed
-services, while LiveKit uses LiveKit Cloud. Follow the deployment runbook in
+The frontend deploys to Vercel and the backend runs as a systemd service on
+the OCI VM. PostgreSQL and Redis run in the OCI deployment environment, while
+LiveKit uses LiveKit Cloud. Follow the deployment runbook in
 `infra/oci/README.md`.
 
 The backend migration image is `/app/migrate`; run it once against the target
 database before starting or updating the backend. Locally, use `make migrate`.
 Never commit real `.env` files or production credentials.
+
+## Production operations and monitoring
+
+The production backend runs on the OCI VM at `92.4.68.46` as the
+`vaani-backend` systemd service. Connect with the OCI deployment key:
+
+```bash
+ssh -i ~/.ssh/vaani-api.key ubuntu@92.4.68.46
+```
+
+### Backend logs and service status
+
+```bash
+# Follow live backend logs
+sudo journalctl -u vaani-backend -f
+
+# Show recent logs
+sudo journalctl -u vaani-backend -n 100 --no-pager
+
+# Show today's logs
+sudo journalctl -u vaani-backend --since today --no-pager
+
+# Show likely failures only
+sudo journalctl -u vaani-backend --since today --no-pager \
+  | grep -iE "error|failed|panic|fatal"
+
+# Service status and restart
+sudo systemctl status vaani-backend
+sudo systemctl restart vaani-backend
+```
+
+### Health and readiness checks
+
+```bash
+curl https://vaani-bc.fmpg.in/health
+curl https://vaani-bc.fmpg.in/ready
+```
+
+`/health` confirms the process is responding. `/ready` also checks the
+backend's required dependencies.
+
+### Nginx and WebSocket monitoring
+
+```bash
+sudo tail -f /var/log/nginx/access.log
+sudo tail -f /var/log/nginx/error.log
+
+sudo journalctl -u vaani-backend -f \
+  | grep -iE "WS|websocket|upgrade"
+```
+
+### Server, Redis, and database checks
+
+```bash
+# VM resources
+free -h
+df -h
+uptime
+top
+
+# Redis
+sudo systemctl status redis-server
+redis-cli ping
+```
+
+For PostgreSQL, use the configured production `DATABASE_URL` without
+printing it in logs or chat:
+
+```bash
+psql "$DATABASE_URL" -c "SELECT current_database(), now();"
+```
+
+### GitHub Actions CI/CD monitoring
+
+From the repository checkout, list backend deployment runs:
+
+```bash
+gh run list \
+  --repo Vivekkumarprince1/vaani \
+  --workflow "Deploy backend to OCI" \
+  --branch v2
+```
+
+Inspect a particular run or follow it live:
+
+```bash
+gh run view RUN_ID --repo Vivekkumarprince1/vaani --log
+gh run watch RUN_ID --repo Vivekkumarprince1/vaani
+```
+
+A successful deployment must pass backend tests, build, artifact upload,
+OCI installation, migration, service restart, and `/health` plus `/ready`
+smoke checks.
+
+### Vercel frontend logs
+
+```bash
+vercel logs https://vaani-ten-phi.vercel.app
+```
+
+You can also open Vercel Dashboard → Project → Deployments → deployment →
+Runtime Logs.
+
+Never paste JWTs, passwords, API keys, private keys, or complete database
+URLs when sharing logs or troubleshooting output.

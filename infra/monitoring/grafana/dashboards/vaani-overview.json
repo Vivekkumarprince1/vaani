@@ -1,0 +1,17 @@
+{
+  "annotations": {"list": []},
+  "editable": false,
+  "panels": [
+    {"type":"timeseries","title":"HTTP request rate","gridPos":{"h":8,"w":12,"x":0,"y":0},"targets":[{"expr":"sum(rate(vaani_http_requests_total[5m]))","legendFormat":"requests/sec"}]},
+    {"type":"timeseries","title":"HTTP 5xx rate","gridPos":{"h":8,"w":12,"x":12,"y":0},"targets":[{"expr":"sum(rate(vaani_http_requests_total{status=~\"5..\"}[5m]))","legendFormat":"5xx/sec"}]},
+    {"type":"timeseries","title":"Online users","gridPos":{"h":8,"w":12,"x":0,"y":8},"targets":[{"expr":"vaani_online_users","legendFormat":"users"}]},
+    {"type":"timeseries","title":"WebSocket connections","gridPos":{"h":8,"w":12,"x":12,"y":8},"targets":[{"expr":"vaani_websocket_connections","legendFormat":"connections"}]}
+  ],
+  "schemaVersion": 39,
+  "tags": ["vaani"],
+  "templating": {"list": []},
+  "time": {"from":"now-6h","to":"now"},
+  "title": "Vaani Overview",
+  "uid": "vaani-overview",
+  "version": 1
+}

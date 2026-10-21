@@ -1,0 +1,38 @@
+groups:
+  - name: vaani-backend
+    rules:
+      - alert: VaaniBackendDown
+        expr: up{job="vaani-backend"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: Vaani backend is unreachable
+          description: Prometheus cannot scrape the Vaani backend for 2 minutes.
+
+      - alert: VaaniHighHTTPErrorRate
+        expr: rate(vaani_http_requests_total{status=~"5.."}[5m]) / clamp_min(rate(vaani_http_requests_total[5m]), 1) > 0.05
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Vaani HTTP 5xx rate is high
+          description: More than 5 percent of backend requests are returning 5xx responses.
+
+      - alert: VaaniWebSocketConnectionsDropped
+        expr: changes(vaani_websocket_connections[10m]) > 20 and vaani_websocket_connections == 0
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: Vaani WebSocket connections dropped to zero
+          description: Investigate backend restarts, reverse proxy, and WebSocket origin/TLS configuration.
+
+      - alert: OCIDiskAlmostFull
+        expr: 100 * (1 - node_filesystem_avail_bytes{mountpoint="/",fstype!="rootfs"} / node_filesystem_size_bytes{mountpoint="/",fstype!="rootfs"}) > 85
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: OCI root filesystem is almost full
+          description: Root filesystem usage is above 85 percent.

@@ -167,6 +167,19 @@ and restarting the service; changing code requires pushing to `v2`.
 - After every rotation, restart the backend and run `/health`, `/ready`, login,
   and WebSocket smoke checks.
 
+## Monitoring
+
+The backend exposes a Prometheus-compatible `/metrics` endpoint. Set
+`METRICS_TOKEN` in the OCI backend environment to require a bearer token.
+The complete OCI stack—Prometheus, Grafana, Node Exporter, PostgreSQL Exporter,
+Redis Exporter, alert rules, and a starter dashboard—is in
+`infra/monitoring/`. Follow its [runbook](infra/monitoring/README.md); keep
+Prometheus/Grafana bound to localhost or behind VPN/Cloudflare Access.
+
+The existing Admin Control Room metrics are application UI data. Prometheus
+is the historical time-series source for request latency/errors, WebSocket
+connections, online users, VM resources, PostgreSQL, and Redis.
+
 ---
 
 ## 🔑 Superadmin Bootstrap

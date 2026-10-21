@@ -27,6 +27,7 @@ type EnvConfig struct {
 	Env                   string
 	AllowedOrigins        string
 	AllowedOriginSuffixes string
+	MetricsToken          string
 	DatabaseURL           string
 	RedisURL              string
 	JWTSecret             string
@@ -117,6 +118,7 @@ func LoadEnv() EnvConfig {
 		Env:                   envName,
 		AllowedOrigins:        getEnv("ALLOWED_ORIGINS", ""),
 		AllowedOriginSuffixes: getEnv("ALLOWED_ORIGIN_SUFFIXES", ""),
+		MetricsToken:          getEnv("METRICS_TOKEN", ""),
 		DatabaseURL:           getEnv("DATABASE_URL", "postgres://vivekkumar@localhost:5432/vaani_v2?sslmode=disable"),
 		RedisURL:              getEnv("REDIS_URL", "redis://localhost:6379"),
 		JWTSecret:             getEnv("JWT_SECRET", ""),

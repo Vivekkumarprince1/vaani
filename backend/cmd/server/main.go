@@ -17,6 +17,7 @@ import (
 	"vaani-v2/backend/internal/domain"
 	"vaani-v2/backend/internal/handlers"
 	"vaani-v2/backend/internal/livekit"
+	appmetrics "vaani-v2/backend/internal/metrics"
 	"vaani-v2/backend/internal/providers"
 	"vaani-v2/backend/internal/redis"
 	"vaani-v2/backend/internal/ws"
@@ -87,6 +88,8 @@ func main() {
 	r.Use(middleware.Recoverer)
 	r.Use(middleware.Compress(5))
 	r.Use(middleware.Timeout(60 * time.Second))
+	appMetrics := appmetrics.New("2.0.0")
+	r.Use(appMetrics.Middleware)
 
 	// CORS Setup
 	var allowedOrigins []string
@@ -111,6 +114,14 @@ func main() {
 	// 10. WebSocket Hub (origin policy is shared with HTTP CORS policy)
 	hub := ws.NewHubWithSuffixes(rdb, allowedOriginSuffixes, allowedOrigins...)
 	go hub.Run()
+	go func() {
+		ticker := time.NewTicker(15 * time.Second)
+		defer ticker.Stop()
+		for range ticker.C {
+			appMetrics.OnlineUsers.Set(float64(hub.OnlineUserCount()))
+			appMetrics.WebSocketConnections.Set(float64(hub.ConnectionCount()))
+		}
+	}()
 
 	// 11. Auth & Handlers
 	authHandler := handlers.NewAuthHandler(db, authenticator)
@@ -153,6 +164,9 @@ func main() {
 		w.WriteHeader(http.StatusOK)
 		fmt.Fprint(w, `{"status":"ready","dependency":"postgres"}`)
 	})
+
+	// Prometheus scrape endpoint. Set METRICS_TOKEN in production to protect it.
+	r.Get("/metrics", appMetrics.Handler(env.MetricsToken).ServeHTTP)
 
 	// WebSocket Endpoint
 	r.Get("/ws", func(w http.ResponseWriter, r *http.Request) {

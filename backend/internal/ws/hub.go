@@ -149,6 +149,17 @@ func (h *Hub) OnlineUserCount() int {
 	return len(h.clients)
 }
 
+// ConnectionCount returns the number of live WebSocket client connections.
+func (h *Hub) ConnectionCount() int {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	count := 0
+	for _, conns := range h.clients {
+		count += len(conns)
+	}
+	return count
+}
+
 // IsOnline reports whether a user currently has a live WebSocket connection.
 func (h *Hub) IsOnline(userID uuid.UUID) bool {
 	h.mu.RLock()

@@ -12,6 +12,7 @@ import (
 	"vaani-v2/backend/internal/livekit"
 	"vaani-v2/backend/internal/providers"
 	"vaani-v2/backend/internal/redis"
+	"vaani-v2/backend/internal/ws"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
@@ -24,15 +25,17 @@ type AdminHandler struct {
 	configEngine *config.ConfigEngine
 	livekitMgr   *livekit.Manager
 	providerMgr  *providers.ProviderManager
+	hub          *ws.Hub
 }
 
-func NewAdminHandler(db *database.DB, rdb *redis.Client, cfg *config.ConfigEngine, lk *livekit.Manager, pm *providers.ProviderManager) *AdminHandler {
+func NewAdminHandler(db *database.DB, rdb *redis.Client, cfg *config.ConfigEngine, lk *livekit.Manager, pm *providers.ProviderManager, hub *ws.Hub) *AdminHandler {
 	return &AdminHandler{
 		db:           db,
 		redis:        rdb,
 		configEngine: cfg,
 		livekitMgr:   lk,
 		providerMgr:  pm,
+		hub:          hub,
 	}
 }
 
@@ -120,7 +123,9 @@ func (h *AdminHandler) CreateRealtimeSession(w http.ResponseWriter, r *http.Requ
 func (h *AdminHandler) GetMetrics(w http.ResponseWriter, r *http.Request) {
 	var totalUsers, onlineUsers, adminUsers, activeCalls, totalMessages int
 	_ = h.db.Pool.QueryRow(r.Context(), "SELECT COUNT(*) FROM users").Scan(&totalUsers)
-	_ = h.db.Pool.QueryRow(r.Context(), "SELECT COUNT(*) FROM users WHERE status != 'offline'").Scan(&onlineUsers)
+	if h.hub != nil {
+		onlineUsers = h.hub.OnlineUserCount()
+	}
 	_ = h.db.Pool.QueryRow(r.Context(), "SELECT COUNT(*) FROM users WHERE role IN ('admin', 'superadmin')").Scan(&adminUsers)
 	_ = h.db.Pool.QueryRow(r.Context(), "SELECT COUNT(*) FROM call_logs WHERE status = 'active'").Scan(&activeCalls)
 	_ = h.db.Pool.QueryRow(r.Context(), "SELECT COUNT(*) FROM messages").Scan(&totalMessages)
@@ -397,6 +402,13 @@ func (h *AdminHandler) ListUsers(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var u domain.User
 		if err := rows.Scan(&u.ID, &u.Username, &u.Email, &u.Phone, &u.Role, &u.PreferredLanguage, &u.Status, &u.IsActive, &u.CreatedAt, &u.LastActiveAt); err == nil {
+			if h.hub != nil {
+				if h.hub.IsOnline(u.ID) {
+					u.Status = domain.StatusOnline
+				} else {
+					u.Status = domain.StatusOffline
+				}
+			}
 			users = append(users, u)
 		}
 	}

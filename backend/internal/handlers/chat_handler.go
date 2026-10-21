@@ -114,12 +114,18 @@ func (h *ChatHandler) ListRooms(w http.ResponseWriter, r *http.Request) {
 
 		rd.LastMessage = lastMsg
 		if otherID != nil && otherUsername != nil {
+			status := *otherStatus
+			if h.hub != nil && h.hub.IsOnline(*otherID) {
+				status = domain.StatusOnline
+			} else {
+				status = domain.StatusOffline
+			}
 			rd.OtherUser = &domain.UserSummary{
 				ID:                *otherID,
 				Username:          *otherUsername,
 				Email:             *otherEmail,
 				PreferredLanguage: *otherLang,
-				Status:            *otherStatus,
+				Status:            status,
 				AvatarURL:         otherAvatar,
 			}
 			if rd.Type == "direct" {
@@ -336,6 +342,13 @@ func (h *ChatHandler) GetRoomMembers(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var m domain.RoomMemberDetail
 		if err := rows.Scan(&m.RoomID, &m.UserID, &m.Username, &m.Email, &m.Role, &m.PreferredLanguage, &m.Status, &m.AvatarURL, &m.JoinedAt); err == nil {
+			if h.hub != nil {
+				if h.hub.IsOnline(m.UserID) {
+					m.Status = domain.StatusOnline
+				} else {
+					m.Status = domain.StatusOffline
+				}
+			}
 			members = append(members, m)
 		}
 	}

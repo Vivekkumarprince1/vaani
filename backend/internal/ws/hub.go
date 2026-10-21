@@ -141,6 +141,22 @@ func (h *Hub) Run() {
 	}
 }
 
+// OnlineUserCount returns the number of unique users with at least one live
+// WebSocket connection on this backend instance.
+func (h *Hub) OnlineUserCount() int {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return len(h.clients)
+}
+
+// IsOnline reports whether a user currently has a live WebSocket connection.
+func (h *Hub) IsOnline(userID uuid.UUID) bool {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	_, ok := h.clients[userID]
+	return ok
+}
+
 func (h *Hub) SendToUser(userID uuid.UUID, eventType string, payload interface{}) {
 	rawPayload, _ := json.Marshal(payload)
 	evt := Event{

@@ -114,7 +114,7 @@ func main() {
 
 	// 11. Auth & Handlers
 	authHandler := handlers.NewAuthHandler(db, authenticator)
-	adminHandler := handlers.NewAdminHandler(db, rdb, configEngine, livekitMgr, providerMgr)
+	adminHandler := handlers.NewAdminHandler(db, rdb, configEngine, livekitMgr, providerMgr, hub)
 	chatHandler := handlers.NewChatHandler(db, hub, providerMgr)
 	callHandler := handlers.NewCallHandler(db, hub, livekitMgr, providerMgr)
 

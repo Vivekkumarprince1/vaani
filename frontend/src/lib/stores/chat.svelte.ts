@@ -58,6 +58,17 @@ class ChatStore {
 	isLoadingMembers = $state<boolean>(false);
 
 	initListeners() {
+		wsClient.on('presence_change', (presence: { user_id: string; status: string }) => {
+			this.rooms = this.rooms.map((room) =>
+				room.other_user?.id === presence.user_id
+					? { ...room, other_user: { ...room.other_user, status: presence.status } }
+					: room
+			);
+			this.activeMembers = this.activeMembers.map((member) =>
+				member.user_id === presence.user_id ? { ...member, status: presence.status } : member
+			);
+		});
+
 		wsClient.on('chat_message', (msg: Message) => {
 			if (this.activeRoom && msg.room_id === this.activeRoom.id) {
 				this.messages = [...this.messages, msg];

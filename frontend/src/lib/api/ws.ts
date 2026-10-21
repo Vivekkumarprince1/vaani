@@ -1,4 +1,4 @@
-import { WS_BASE } from './client';
+import { getWebSocketBase } from './client';
 
 export type WSEventHandler = (payload: any) => void;
 
@@ -22,7 +22,7 @@ class WebSocketClient {
 			return;
 		}
 
-		const wsUrl = `${WS_BASE}?token=${encodeURIComponent(token)}`;
+		const wsUrl = `${getWebSocketBase()}?token=${encodeURIComponent(token)}`;
 		this.socket = new WebSocket(wsUrl);
 
 		this.socket.onopen = () => {

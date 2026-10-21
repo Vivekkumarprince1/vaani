@@ -118,4 +118,25 @@ curl -fsS https://api.example.com/ready
 curl -fsS https://app.example.com/health
 ```
 
+## 7. Current OCI VM GitHub Actions deployment
+
+The current production backend runs as the `vaani-backend` systemd service on
+the OCI VM. `.github/workflows/backend-deploy.yml` builds and tests Linux
+amd64 server and migration binaries on every push to `v2` that changes
+`backend/**`, then uploads them over SSH, runs the idempotent migration runner,
+restarts the service, and verifies `/health` and `/ready`.
+
+Configure these GitHub Actions secrets in the repository or its `production`
+environment:
+
+- `OCI_HOST` — backend VM public IP or hostname
+- `OCI_USER` — SSH user, currently `ubuntu`
+- `OCI_SSH_KEY` — private key matching the VM authorized key
+- `OCI_KNOWN_HOSTS` — output of `ssh-keyscan -H <OCI_HOST>` captured after
+  verifying the host fingerprint
+
+The workflow does not copy `.env` or application secrets from GitHub. It keeps
+the production environment file on the VM and only deploys versioned binaries
+and migrations.
+
 References: [OCI Container Instances](https://docs.oracle.com/en-us/iaas/Content/container-instances/overview-of-container-instances.htm), [OCI Database with PostgreSQL](https://docs.oracle.com/en-us/iaas/Content/postgresql/overview.htm), [OCI Cache](https://docs.oracle.com/en-us/iaas/Content/ocicache/home.htm), and [OCIR image push](https://docs.oracle.com/en-us/iaas/Content/Registry/Tasks/registrypushingimagesusingthedockercli.htm).

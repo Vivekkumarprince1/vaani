@@ -1,0 +1,109 @@
+name: Deploy backend to OCI
+
+on:
+  push:
+    branches: [v2]
+    paths:
+      - "backend/**"
+      - ".github/workflows/backend-deploy.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: backend-production
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: backend/go.mod
+          cache: true
+
+      - name: Test backend
+        working-directory: backend
+        run: go test ./...
+
+      - name: Build Linux binaries
+        working-directory: backend
+        env:
+          CGO_ENABLED: 0
+          GOOS: linux
+          GOARCH: amd64
+        run: |
+          go build -trimpath -ldflags='-s -w' -o server-release ./cmd/server
+          go build -trimpath -ldflags='-s -w' -o migrate-release ./cmd/migrate
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-${{ github.sha }}
+          path: |
+            backend/server-release
+            backend/migrate-release
+            backend/migrations/*.sql
+          if-no-files-found: error
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: backend-${{ github.sha }}
+          path: release
+
+      - name: Configure SSH
+        env:
+          OCI_SSH_KEY: ${{ secrets.OCI_SSH_KEY }}
+          OCI_KNOWN_HOSTS: ${{ secrets.OCI_KNOWN_HOSTS }}
+        run: |
+          install -d -m 700 "$HOME/.ssh"
+          eval "$(ssh-agent -s)"
+          printf '%s\n' "$OCI_SSH_KEY" | ssh-add -
+          printf '%s\n' "$OCI_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
+          chmod 600 "$HOME/.ssh/known_hosts"
+
+      - name: Upload release to OCI
+        env:
+          OCI_HOST: ${{ secrets.OCI_HOST }}
+          OCI_USER: ${{ secrets.OCI_USER }}
+        run: |
+          scp release/server-release release/migrate-release release/migrations/*.sql \
+            "$OCI_USER@$OCI_HOST:/tmp/"
+
+      - name: Install, migrate, restart, and smoke test
+        env:
+          OCI_HOST: ${{ secrets.OCI_HOST }}
+          OCI_USER: ${{ secrets.OCI_USER }}
+        run: |
+          ssh "$OCI_USER@$OCI_HOST" 'bash -s' <<'REMOTE'
+          set -euo pipefail
+
+          sudo install -o vaani -g vaani -m 0755 /tmp/server-release /opt/vaani/server.next
+          sudo install -o vaani -g vaani -m 0755 /tmp/migrate-release /opt/vaani/migrate.next
+          sudo install -d -o vaani -g vaani -m 0755 /opt/vaani/migrations
+          sudo install -o vaani -g vaani -m 0644 /tmp/001_init_schema.sql /opt/vaani/migrations/001_init_schema.sql
+
+          sudo -u vaani bash -c 'set -a; . /etc/vaani/backend.env; set +a; cd /opt/vaani; MIGRATIONS_DIR=/opt/vaani/migrations /opt/vaani/migrate.next'
+
+          sudo mv /opt/vaani/server.next /opt/vaani/server
+          sudo mv /opt/vaani/migrate.next /opt/vaani/migrate
+          sudo systemctl restart vaani-backend
+
+          for attempt in 1 2 3 4 5 6 7 8 9 10; do
+            if curl -fsS http://127.0.0.1:8080/health >/dev/null && curl -fsS http://127.0.0.1:8080/ready >/dev/null; then
+              exit 0
+            fi
+            sleep 2
+          done
+          sudo systemctl --no-pager --full status vaani-backend
+          exit 1
+          REMOTE

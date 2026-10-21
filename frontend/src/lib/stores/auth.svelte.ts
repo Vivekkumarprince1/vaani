@@ -1,5 +1,6 @@
 import { api } from '#lib/api/client';
 import { wsClient } from '#lib/api/ws';
+import { goto } from '$app/navigation';
 
 export interface User {
 	id: string;
@@ -71,6 +72,9 @@ class AuthStore {
 		this.token = null;
 		localStorage.removeItem('vaani_token');
 		wsClient.disconnect();
+		if (typeof window !== 'undefined' && !window.location.pathname.startsWith('/login')) {
+			void goto('/login');
+		}
 	}
 }
 

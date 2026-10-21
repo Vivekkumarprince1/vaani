@@ -64,24 +64,4 @@ jobs:
 
       - name: Install, migrate, restart, and smoke test
         run: |
-          set -euo pipefail
-
-          sudo install -o vaani -g vaani -m 0755 release/server-release /opt/vaani/server.next
-          sudo install -o vaani -g vaani -m 0755 release/migrate-release /opt/vaani/migrate.next
-          sudo install -d -o vaani -g vaani -m 0755 /opt/vaani/migrations
-          sudo install -o vaani -g vaani -m 0644 release/migrations/*.sql /opt/vaani/migrations/
-
-          sudo -u vaani bash -c 'set -a; . /etc/vaani/backend.env; set +a; cd /opt/vaani; MIGRATIONS_DIR=/opt/vaani/migrations /opt/vaani/migrate.next'
-
-          sudo mv /opt/vaani/server.next /opt/vaani/server
-          sudo mv /opt/vaani/migrate.next /opt/vaani/migrate
-          sudo systemctl restart vaani-backend
-
-          for attempt in 1 2 3 4 5 6 7 8 9 10; do
-            if curl -fsS http://127.0.0.1:8080/health >/dev/null && curl -fsS http://127.0.0.1:8080/ready >/dev/null; then
-              exit 0
-            fi
-            sleep 2
-          done
-          sudo systemctl --no-pager --full status vaani-backend
-          exit 1
+          sudo /usr/local/sbin/vaani-deploy

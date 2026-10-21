@@ -101,9 +101,15 @@ func main() {
 	if len(allowedOrigins) == 0 {
 		allowedOrigins = []string{"http://localhost:5173", "http://localhost:3000"}
 	}
+	var allowedOriginSuffixes []string
+	for _, suffix := range strings.Split(env.AllowedOriginSuffixes, ",") {
+		if trimmed := strings.TrimSpace(strings.ToLower(suffix)); trimmed != "" {
+			allowedOriginSuffixes = append(allowedOriginSuffixes, trimmed)
+		}
+	}
 
 	// 10. WebSocket Hub (origin policy is shared with HTTP CORS policy)
-	hub := ws.NewHub(rdb, allowedOrigins...)
+	hub := ws.NewHubWithSuffixes(rdb, allowedOriginSuffixes, allowedOrigins...)
 	go hub.Run()
 
 	// 11. Auth & Handlers

@@ -5,6 +5,7 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"strings"
 	"sync"
 	"time"
 
@@ -37,16 +38,21 @@ type Client struct {
 }
 
 type Hub struct {
-	mu             sync.RWMutex
-	clients        map[uuid.UUID]map[*Client]bool // UserID -> set of client connections (multi-device)
-	broadcast      chan []byte
-	register       chan *Client
-	unregister     chan *Client
-	redis          *redis.Client
-	allowedOrigins map[string]struct{}
+	mu                    sync.RWMutex
+	clients               map[uuid.UUID]map[*Client]bool // UserID -> set of client connections (multi-device)
+	broadcast             chan []byte
+	register              chan *Client
+	unregister            chan *Client
+	redis                 *redis.Client
+	allowedOrigins        map[string]struct{}
+	allowedOriginSuffixes []string
 }
 
 func NewHub(rdb *redis.Client, origins ...string) *Hub {
+	return NewHubWithSuffixes(rdb, nil, origins...)
+}
+
+func NewHubWithSuffixes(rdb *redis.Client, suffixes []string, origins ...string) *Hub {
 	allowed := make(map[string]struct{}, len(origins))
 	for _, origin := range origins {
 		if origin != "" {
@@ -54,12 +60,13 @@ func NewHub(rdb *redis.Client, origins ...string) *Hub {
 		}
 	}
 	return &Hub{
-		clients:        make(map[uuid.UUID]map[*Client]bool),
-		broadcast:      make(chan []byte, 256),
-		register:       make(chan *Client),
-		unregister:     make(chan *Client),
-		redis:          rdb,
-		allowedOrigins: allowed,
+		clients:               make(map[uuid.UUID]map[*Client]bool),
+		broadcast:             make(chan []byte, 256),
+		register:              make(chan *Client),
+		unregister:            make(chan *Client),
+		redis:                 rdb,
+		allowedOrigins:        allowed,
+		allowedOriginSuffixes: suffixes,
 	}
 }
 
@@ -75,7 +82,15 @@ func (h *Hub) isAllowedOrigin(r *http.Request) bool {
 		return false
 	}
 	_, ok := h.allowedOrigins[parsed.Scheme+"://"+parsed.Host]
-	return ok
+	if ok {
+		return true
+	}
+	for _, suffix := range h.allowedOriginSuffixes {
+		if strings.HasSuffix(parsed.Host, suffix) && strings.HasPrefix(parsed.Host, "vaani-") {
+			return true
+		}
+	}
+	return false
 }
 
 func (h *Hub) Run() {

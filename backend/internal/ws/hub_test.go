@@ -25,3 +25,17 @@ func TestHubAllowedOrigin(t *testing.T) {
 		t.Fatal("non-browser clients without Origin should be allowed")
 	}
 }
+
+func TestHubAllowedOriginSuffix(t *testing.T) {
+	h := NewHubWithSuffixes(nil, []string{"-vivek-kumars-projects-129c22bf.vercel.app"}, "https://vaani-ten-phi.vercel.app")
+	preview := httptest.NewRequest("GET", "/ws", nil)
+	preview.Header.Set("Origin", "https://vaani-git-v2-vivek-kumars-projects-129c22bf.vercel.app")
+	if !h.isAllowedOrigin(preview) {
+		t.Fatal("expected project preview origin to be allowed")
+	}
+	other := httptest.NewRequest("GET", "/ws", nil)
+	other.Header.Set("Origin", "https://other-git-v2-vivek-kumars-projects-129c22bf.vercel.app")
+	if h.isAllowedOrigin(other) {
+		t.Fatal("did not expect another Vercel project origin to be allowed")
+	}
+}

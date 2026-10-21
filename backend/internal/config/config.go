@@ -23,22 +23,23 @@ import (
 
 // EnvConfig holds immutable boot-time environment variables
 type EnvConfig struct {
-	Port                string
-	Env                 string
-	AllowedOrigins      string
-	DatabaseURL         string
-	RedisURL            string
-	JWTSecret           string
-	ConfigEncryptionKey string
-	SuperadminEmail     string
-	SuperadminPassword  string
-	SuperadminUsername  string
-	LiveKitURL          string
-	LiveKitAPIKey       string
-	LiveKitAPISecret    string
-	CloudinaryCloudName string
-	CloudinaryAPIKey    string
-	CloudinaryAPISecret string
+	Port                  string
+	Env                   string
+	AllowedOrigins        string
+	AllowedOriginSuffixes string
+	DatabaseURL           string
+	RedisURL              string
+	JWTSecret             string
+	ConfigEncryptionKey   string
+	SuperadminEmail       string
+	SuperadminPassword    string
+	SuperadminUsername    string
+	LiveKitURL            string
+	LiveKitAPIKey         string
+	LiveKitAPISecret      string
+	CloudinaryCloudName   string
+	CloudinaryAPIKey      string
+	CloudinaryAPISecret   string
 }
 
 // DynamicConfig holds admin-controlled settings that hot-reload in memory
@@ -112,22 +113,23 @@ func LoadEnv() EnvConfig {
 	}
 
 	return EnvConfig{
-		Port:                getEnv("PORT", "8080"),
-		Env:                 envName,
-		AllowedOrigins:      getEnv("ALLOWED_ORIGINS", ""),
-		DatabaseURL:         getEnv("DATABASE_URL", "postgres://vivekkumar@localhost:5432/vaani_v2?sslmode=disable"),
-		RedisURL:            getEnv("REDIS_URL", "redis://localhost:6379"),
-		JWTSecret:           getEnv("JWT_SECRET", ""),
-		ConfigEncryptionKey: getEnv("CONFIG_ENCRYPTION_KEY", ""),
-		SuperadminEmail:     getEnv("SUPERADMIN_EMAIL", "admin@vaani.internal"),
-		SuperadminPassword:  getEnv("SUPERADMIN_PASSWORD", ""),
-		SuperadminUsername:  getEnv("SUPERADMIN_USERNAME", "superadmin"),
-		LiveKitURL:          getEnv("LIVEKIT_URL", ""),
-		LiveKitAPIKey:       getEnv("LIVEKIT_API_KEY", ""),
-		LiveKitAPISecret:    getEnv("LIVEKIT_API_SECRET", ""),
-		CloudinaryCloudName: getEnv("CLOUDINARY_CLOUD_NAME", ""),
-		CloudinaryAPIKey:    getEnv("CLOUDINARY_API_KEY", ""),
-		CloudinaryAPISecret: getEnv("CLOUDINARY_API_SECRET", ""),
+		Port:                  getEnv("PORT", "8080"),
+		Env:                   envName,
+		AllowedOrigins:        getEnv("ALLOWED_ORIGINS", ""),
+		AllowedOriginSuffixes: getEnv("ALLOWED_ORIGIN_SUFFIXES", ""),
+		DatabaseURL:           getEnv("DATABASE_URL", "postgres://vivekkumar@localhost:5432/vaani_v2?sslmode=disable"),
+		RedisURL:              getEnv("REDIS_URL", "redis://localhost:6379"),
+		JWTSecret:             getEnv("JWT_SECRET", ""),
+		ConfigEncryptionKey:   getEnv("CONFIG_ENCRYPTION_KEY", ""),
+		SuperadminEmail:       getEnv("SUPERADMIN_EMAIL", "admin@vaani.internal"),
+		SuperadminPassword:    getEnv("SUPERADMIN_PASSWORD", ""),
+		SuperadminUsername:    getEnv("SUPERADMIN_USERNAME", "superadmin"),
+		LiveKitURL:            getEnv("LIVEKIT_URL", ""),
+		LiveKitAPIKey:         getEnv("LIVEKIT_API_KEY", ""),
+		LiveKitAPISecret:      getEnv("LIVEKIT_API_SECRET", ""),
+		CloudinaryCloudName:   getEnv("CLOUDINARY_CLOUD_NAME", ""),
+		CloudinaryAPIKey:      getEnv("CLOUDINARY_API_KEY", ""),
+		CloudinaryAPISecret:   getEnv("CLOUDINARY_API_SECRET", ""),
 	}
 }
 

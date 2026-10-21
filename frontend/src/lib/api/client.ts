@@ -1,7 +1,20 @@
 import axios from 'axios';
 
 export const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:8080/api';
-export const WS_BASE = import.meta.env.VITE_WS_BASE || 'ws://localhost:8080/ws';
+
+const configuredWSBase = import.meta.env.VITE_WS_BASE || 'ws://localhost:8080/ws';
+
+// Browsers block ws:// connections from an https:// page. Keep deployments
+// resilient to a stale Vercel environment variable by upgrading the scheme
+// at runtime; the canonical production value remains wss:// in Vercel.
+function normalizeWebSocketBase(value: string): string {
+	if (typeof window !== 'undefined' && window.location.protocol === 'https:' && value.startsWith('ws://')) {
+		return `wss://${value.slice('ws://'.length)}`;
+	}
+	return value;
+}
+
+export const WS_BASE = normalizeWebSocketBase(configuredWSBase);
 
 export const api = axios.create({
 	baseURL: API_BASE,

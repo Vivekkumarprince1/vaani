@@ -129,7 +129,7 @@ func main() {
 	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		fmt.Fprint(w, `{"status":"ok","version":"2.0.0","engine":"golang","deployment":"oci-cicd"}`)
+		fmt.Fprint(w, `{"status":"ok","version":"2.0.0","engine":"golang","deployment":"oci-cicd-v2"}`)
 	})
 
 	// Readiness Check: only reports ready after PostgreSQL is reachable.

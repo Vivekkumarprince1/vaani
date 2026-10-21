@@ -3,8 +3,8 @@
 	import { goto } from '$app/navigation';
 	import { Sparkles, ArrowRight, Lock, User as UserIcon } from 'lucide-svelte';
 
-	let identifier = $state('superadmin@vaani.internal');
-	let password = $state('Admin@12345');
+	let identifier = $state('');
+	let password = $state('');
 	let error = $state<string | null>(null);
 	let isSubmitting = $state(false);
 

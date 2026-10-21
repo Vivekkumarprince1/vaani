@@ -1,5 +1,9 @@
 # 🎙️ Vaani v2 — High-Performance Multilingual Communication Platform
 
+For a complete agent/IDE handoff covering architecture, exact OCI paths,
+deployment flow, environment ownership, monitoring, and troubleshooting, see
+the [project handoff](docs/PROJECT-HANDOFF.md).
+
 **Vaani v2** is a completely rewritten, modern real-time communication platform engineered with **Go (Golang)**, **Svelte 5 (Runes)**, **LiveKit SFU**, **PostgreSQL 16**, and **Redis**.
 
 It solves language barriers during audio/video calls and chat by providing instant, low-latency live speech-to-speech audio and subtitle translation.

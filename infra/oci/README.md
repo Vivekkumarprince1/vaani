@@ -1,5 +1,10 @@
 # OCI deployment runbook
 
+> Current production uses an OCI VM with a systemd backend and a self-hosted
+> GitHub Actions runner. The Container Registry/Container Instances workflow
+> below is a future/alternative OCI architecture, not the active deployment.
+> For the active topology read [`docs/PROJECT-HANDOFF.md`](../../docs/PROJECT-HANDOFF.md).
+
 This project is deployed with the frontend on Vercel and the backend on OCI.
 PostgreSQL and Redis stay managed and private inside the same VCN.
 
@@ -118,25 +123,26 @@ curl -fsS https://api.example.com/ready
 curl -fsS https://app.example.com/health
 ```
 
-## 7. Current OCI VM GitHub Actions deployment
+## 7. Active OCI VM GitHub Actions deployment
 
-The current production backend runs as the `vaani-backend` systemd service on
+The active production backend runs as the `vaani-backend` systemd service on
 the OCI VM. `.github/workflows/backend-deploy.yml` builds and tests Linux
 amd64 server and migration binaries on every push to `v2` that changes
-`backend/**`, then uploads them over SSH, runs the idempotent migration runner,
-restarts the service, and verifies `/health` and `/ready`.
+`backend/**`. The deploy job runs on the OCI self-hosted runner labeled
+`vaani-oci` and executes:
 
-Configure these GitHub Actions secrets in the repository or its `vaani-v2`
-environment:
+```bash
+sudo /usr/local/sbin/vaani-deploy
+```
 
-- `OCI_HOST` — backend VM public IP or hostname
-- `OCI_USER` — SSH user, currently `ubuntu`
-- `OCI_SSH_KEY` — private key matching the VM authorized key
-- `OCI_KNOWN_HOSTS` — output of `ssh-keyscan -H <OCI_HOST>` captured after
-  verifying the host fingerprint
+That root-owned script installs the release under `/opt/vaani/server`, runs
+the idempotent migration runner, restarts `vaani-backend`, and verifies
+`/health` and `/ready`. It does not use `OCI_HOST`, `OCI_USER`,
+`OCI_SSH_KEY`, `OCI_KNOWN_HOSTS`, scp, or GitHub-managed application secrets.
+The production environment stays on the VM at `/etc/vaani/backend.env`.
 
-The workflow does not copy `.env` or application secrets from GitHub. It keeps
-the production environment file on the VM and only deploys versioned binaries
-and migrations.
+If the self-hosted runner is offline, inspect the runner service and GitHub
+runner labels on the OCI VM before changing the workflow. Do not replace this
+with an SSH deploy without updating the handoff and security model.
 
 References: [OCI Container Instances](https://docs.oracle.com/en-us/iaas/Content/container-instances/overview-of-container-instances.htm), [OCI Database with PostgreSQL](https://docs.oracle.com/en-us/iaas/Content/postgresql/overview.htm), [OCI Cache](https://docs.oracle.com/en-us/iaas/Content/ocicache/home.htm), and [OCIR image push](https://docs.oracle.com/en-us/iaas/Content/Registry/Tasks/registrypushingimagesusingthedockercli.htm).

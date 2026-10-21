@@ -12,6 +12,7 @@ import (
 	"io"
 	"log"
 	"os"
+	"strings"
 	"sync"
 
 	"vaani-v2/backend/internal/database"
@@ -98,6 +99,10 @@ type ConfigEngine struct {
 
 func LoadEnv() EnvConfig {
 	_ = godotenv.Load()
+	envName := os.Getenv("ENV")
+	if envName == "" {
+		envName = "development"
+	}
 
 	getEnv := func(key, fallback string) string {
 		if val := os.Getenv(key); val != "" {
@@ -108,8 +113,8 @@ func LoadEnv() EnvConfig {
 
 	return EnvConfig{
 		Port:                getEnv("PORT", "8080"),
-		Env:                 getEnv("ENV", "development"),
-		AllowedOrigins:      getEnv("ALLOWED_ORIGINS", "http://localhost:5173,http://localhost:3000"),
+		Env:                 envName,
+		AllowedOrigins:      getEnv("ALLOWED_ORIGINS", ""),
 		DatabaseURL:         getEnv("DATABASE_URL", "postgres://vivekkumar@localhost:5432/vaani_v2?sslmode=disable"),
 		RedisURL:            getEnv("REDIS_URL", "redis://localhost:6379"),
 		JWTSecret:           getEnv("JWT_SECRET", ""),
@@ -149,8 +154,20 @@ func (e EnvConfig) Validate() error {
 		return errors.New("SUPERADMIN_PASSWORD must be at least 12 characters")
 	}
 	if e.Env == "production" {
+		if strings.TrimSpace(e.DatabaseURL) == "" || strings.Contains(strings.ToLower(e.DatabaseURL), "localhost") || strings.Contains(strings.ToLower(e.DatabaseURL), "127.0.0.1") {
+			return errors.New("DATABASE_URL must point to a non-local production database")
+		}
+		if strings.TrimSpace(e.RedisURL) == "" || strings.Contains(strings.ToLower(e.RedisURL), "localhost") || strings.Contains(strings.ToLower(e.RedisURL), "127.0.0.1") {
+			return errors.New("REDIS_URL must point to a non-local production Redis instance")
+		}
 		if e.AllowedOrigins == "" {
 			return errors.New("ALLOWED_ORIGINS is required in production")
+		}
+		for _, origin := range strings.Split(e.AllowedOrigins, ",") {
+			origin = strings.TrimSpace(strings.ToLower(origin))
+			if origin == "" || strings.Contains(origin, "localhost") || strings.Contains(origin, "127.0.0.1") || strings.Contains(origin, "0.0.0.0") {
+				return errors.New("ALLOWED_ORIGINS must contain only public frontend origins in production")
+			}
 		}
 		if e.LiveKitURL == "" || e.LiveKitAPIKey == "" || e.LiveKitAPISecret == "" {
 			return errors.New("LIVEKIT_URL, LIVEKIT_API_KEY and LIVEKIT_API_SECRET are required in production")

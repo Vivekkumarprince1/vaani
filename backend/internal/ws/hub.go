@@ -19,6 +19,9 @@ import (
 var upgrader = websocket.Upgrader{
 	ReadBufferSize:  1024 * 16,
 	WriteBufferSize: 1024 * 16,
+	// ServeWS performs the explicit origin allowlist check before upgrading.
+	// Gorilla's default CheckOrigin would reject every browser origin again.
+	CheckOrigin: func(_ *http.Request) bool { return true },
 }
 
 // Event represents incoming and outgoing WebSocket frames

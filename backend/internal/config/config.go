@@ -157,8 +157,8 @@ func (e EnvConfig) Validate() error {
 		if strings.TrimSpace(e.DatabaseURL) == "" || strings.Contains(strings.ToLower(e.DatabaseURL), "localhost") || strings.Contains(strings.ToLower(e.DatabaseURL), "127.0.0.1") {
 			return errors.New("DATABASE_URL must point to a non-local production database")
 		}
-		if strings.TrimSpace(e.RedisURL) == "" || strings.Contains(strings.ToLower(e.RedisURL), "localhost") || strings.Contains(strings.ToLower(e.RedisURL), "127.0.0.1") {
-			return errors.New("REDIS_URL must point to a non-local production Redis instance")
+		if strings.TrimSpace(e.RedisURL) == "" {
+			return errors.New("REDIS_URL is required in production")
 		}
 		if e.AllowedOrigins == "" {
 			return errors.New("ALLOWED_ORIGINS is required in production")

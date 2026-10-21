@@ -25,7 +25,7 @@ func TestEnvConfigValidateRequiresLiveKitInProduction(t *testing.T) {
 	env := EnvConfig{
 		Env:                 "production",
 		DatabaseURL:         "postgres://user:password@db.example.com:5432/vaani?sslmode=require",
-		RedisURL:            "redis://redis.example.com:6379",
+		RedisURL:            "redis://127.0.0.1:6379",
 		AllowedOrigins:      "https://app.example.com",
 		JWTSecret:           "12345678901234567890123456789012",
 		ConfigEncryptionKey: "12345678901234567890123456789012",

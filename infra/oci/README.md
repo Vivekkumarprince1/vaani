@@ -126,7 +126,7 @@ amd64 server and migration binaries on every push to `v2` that changes
 `backend/**`, then uploads them over SSH, runs the idempotent migration runner,
 restarts the service, and verifies `/health` and `/ready`.
 
-Configure these GitHub Actions secrets in the repository or its `production`
+Configure these GitHub Actions secrets in the repository or its `vaani-v2`
 environment:
 
 - `OCI_HOST` — backend VM public IP or hostname

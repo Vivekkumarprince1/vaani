@@ -66,6 +66,7 @@ class CallStore {
 
 	incomingCall = $state<IncomingCallData | null>(null);
 	subtitles = $state<Subtitle[]>([]);
+	private seenSubtitleIds = new Set<string>();
 
 	// Remote participants state & live language map (user_id -> preferred_language)
 	participants = $state<RemoteParticipant[]>([]);
@@ -168,6 +169,16 @@ class CallStore {
 		if (sub.call_room_id && this.currentCallRoomId && sub.call_room_id !== this.currentCallRoomId) {
 			return;
 		}
+		if (sub.id) {
+			if (this.seenSubtitleIds.has(sub.id)) {
+				return;
+			}
+			this.seenSubtitleIds.add(sub.id);
+			if (this.seenSubtitleIds.size > 200) {
+				const firstKey = this.seenSubtitleIds.values().next().value;
+				if (firstKey) this.seenSubtitleIds.delete(firstKey);
+			}
+		}
 		if (sub.id && this.subtitles.some((s) => s.id === sub.id)) {
 			return;
 		}
@@ -180,13 +191,11 @@ class CallStore {
 			if (isTestingAlone || isFromOther) {
 				const myLang = (authStore.user?.preferred_language || 'en').toLowerCase().trim();
 				const subLang = (sub.language || '').toLowerCase().trim();
-				const isDirectOneOnOne = this.participants.length <= 1;
 				const langMatches =
 					!subLang ||
 					subLang === myLang ||
 					subLang.startsWith(myLang) ||
-					myLang.startsWith(subLang) ||
-					isDirectOneOnOne;
+					myLang.startsWith(subLang);
 
 				if (sub.translatedText && (langMatches || isTestingAlone)) {
 					callSpeechService.speak(sub.translatedText, sub.language || myLang, sub.audio_url);
@@ -404,6 +413,7 @@ class CallStore {
 	}
 
 	leaveCall() {
+		this.seenSubtitleIds.clear();
 		callSpeechService.stop();
 		callSounds.stopAll();
 		this.isCallingOut = false;

@@ -402,8 +402,20 @@ export class CallSpeechService {
 		this.accumulatedText = '';
 		this.latestInterimText = '';
 
-		// Require at least 3 voiced frames (~130ms of active voice) and >= 250ms total audio (including pre-roll)
-		if (voicedFrames < 3 || totalSamples < 4000 || chunks.length === 0) {
+		// Require at least 5 voiced frames (~215ms of active voice) and >= 480ms total audio (including pre-roll)
+		if (voicedFrames < 5 || totalSamples < 7500 || chunks.length === 0) {
+			return;
+		}
+
+		// Calculate energy over the utterance to filter out ambient breath or microphone pops
+		let totalEnergy = 0;
+		for (const chunk of chunks) {
+			for (let i = 0; i < chunk.length; i++) {
+				totalEnergy += chunk[i] * chunk[i];
+			}
+		}
+		const overallRms = Math.sqrt(totalEnergy / Math.max(1, totalSamples));
+		if (overallRms < 0.005) {
 			return;
 		}
 

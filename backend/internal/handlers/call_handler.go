@@ -768,10 +768,8 @@ func (h *CallHandler) HandleCallSpeech(w http.ResponseWriter, r *http.Request) {
 			"call_room_id":   body.CallRoomID,
 		}
 
-		// Broadcast live subtitle over WebSocket hub
-		if h.hub != nil {
-			h.hub.BroadcastEvent("subtitle_update", subEvent)
-		}
+		// Broadcast live subtitle specifically to call participants
+		h.broadcastSubtitleToRoom(r.Context(), body.CallRoomID, claims.UserID, subEvent)
 		generatedSubtitles = append(generatedSubtitles, subEvent)
 	}
 
@@ -888,9 +886,7 @@ func (h *CallHandler) HandleCallAudio(w http.ResponseWriter, r *http.Request) {
 			"call_room_id":   callRoomID,
 		}
 
-		if h.hub != nil {
-			h.hub.BroadcastEvent("subtitle_update", subEvent)
-		}
+		h.broadcastSubtitleToRoom(r.Context(), callRoomID, claims.UserID, subEvent)
 		generatedSubtitles = append(generatedSubtitles, subEvent)
 	}
 
@@ -900,6 +896,73 @@ func (h *CallHandler) HandleCallAudio(w http.ResponseWriter, r *http.Request) {
 		"text":      recognizedText,
 		"subtitles": generatedSubtitles,
 	})
+}
+
+// broadcastSubtitleToRoom routes subtitle updates only to call participants, preventing privacy leaks and broadcast floods.
+func (h *CallHandler) broadcastSubtitleToRoom(ctx context.Context, callRoomID string, senderID uuid.UUID, subEvent map[string]interface{}) {
+	if h.hub == nil {
+		return
+	}
+
+	sentUsers := make(map[uuid.UUID]bool)
+
+	// 1. Send to caller
+	h.hub.SendToUser(senderID, "subtitle_update", subEvent)
+	sentUsers[senderID] = true
+
+	// 2. Send to LiveKit participants connected to this room
+	if h.livekitMgr != nil && callRoomID != "" {
+		if parts, err := h.livekitMgr.ListParticipants(ctx, callRoomID); err == nil {
+			for _, p := range parts {
+				if uid, err := uuid.Parse(p.Identity); err == nil && !sentUsers[uid] {
+					h.hub.SendToUser(uid, "subtitle_update", subEvent)
+					sentUsers[uid] = true
+				}
+			}
+		}
+	}
+
+	// 3. Send to call_logs initiator & participants
+	if h.db != nil && h.db.Pool != nil && callRoomID != "" {
+		rows, err := h.db.Pool.Query(ctx, `
+			SELECT DISTINCT u.id
+			FROM call_logs c
+			LEFT JOIN LATERAL jsonb_array_elements(c.participants) AS elem ON TRUE
+			JOIN users u ON (u.id::text = elem->>'user_id' OR u.id = c.initiator_id)
+			WHERE (c.call_room_id = $1 OR c.id::text = $1)`, callRoomID)
+		if err == nil {
+			defer rows.Close()
+			for rows.Next() {
+				var uid uuid.UUID
+				if err := rows.Scan(&uid); err == nil && !sentUsers[uid] {
+					h.hub.SendToUser(uid, "subtitle_update", subEvent)
+					sentUsers[uid] = true
+				}
+			}
+		}
+
+		// 4. Send to rooms room_members (if callRoomID is room_slug)
+		rRows, err := h.db.Pool.Query(ctx, `
+			SELECT DISTINCT rm.user_id
+			FROM rooms r
+			JOIN room_members rm ON r.id = rm.room_id
+			WHERE r.room_slug = $1`, callRoomID)
+		if err == nil {
+			defer rRows.Close()
+			for rRows.Next() {
+				var uid uuid.UUID
+				if err := rRows.Scan(&uid); err == nil && !sentUsers[uid] {
+					h.hub.SendToUser(uid, "subtitle_update", subEvent)
+					sentUsers[uid] = true
+				}
+			}
+		}
+	}
+
+	// 5. Fallback for open instant meetings (meet-*) if participants weren't in DB yet
+	if strings.HasPrefix(callRoomID, "meet-") && len(sentUsers) <= 1 {
+		h.hub.BroadcastEvent("subtitle_update", subEvent)
+	}
 }
 
 // userCanAccessCall verifies that a user is the call initiator, a recorded

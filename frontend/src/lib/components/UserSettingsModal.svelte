@@ -64,10 +64,7 @@
 		saveSuccess = false;
 
 		try {
-			await api.put('/auth/language', { language: newLang });
-			if (authStore.user) {
-				authStore.user.preferred_language = newLang;
-			}
+			await authStore.updateLanguage(newLang);
 			saveSuccess = true;
 			setTimeout(() => (saveSuccess = false), 2500);
 		} catch (err) {

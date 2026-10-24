@@ -36,6 +36,8 @@ type ProviderManager struct {
 	cache           map[string]map[string]interface{} // category -> { "activeProvider": "...", "providers": map... }
 	circuitBreakers map[string]*translation.CircuitBreaker
 	transCache      *translation.TwoTierCache
+	ttsMu           sync.RWMutex
+	ttsAudioCache   map[string][]byte
 	client          *http.Client
 }
 
@@ -57,6 +59,7 @@ func NewProviderManager(db *database.DB, rdb *redis.Client, env config.EnvConfig
 		cache:           make(map[string]map[string]interface{}),
 		circuitBreakers: make(map[string]*translation.CircuitBreaker),
 		transCache:      translation.NewTwoTierCache(rdb, 10000, 24*time.Hour),
+		ttsAudioCache:   make(map[string][]byte),
 		client: &http.Client{
 			Timeout: 12 * time.Second,
 		},
@@ -135,6 +138,21 @@ func (m *ProviderManager) Initialize(ctx context.Context) error {
 	)
 
 	return nil
+}
+
+// StartHotReloadListener subscribes to Redis config reload events so provider settings stay in sync across instances
+func (m *ProviderManager) StartHotReloadListener(ctx context.Context) {
+	if m.redis == nil || m.redis.Rdb == nil {
+		return
+	}
+	pubsub := m.redis.Rdb.Subscribe(ctx, "vaani:config:reload")
+	go func() {
+		ch := pubsub.Channel()
+		for msg := range ch {
+			log.Printf("🔄 ProviderManager hot-reloading category: %s", msg.Payload)
+			_ = m.Initialize(context.Background())
+		}
+	}()
 }
 
 func (m *ProviderManager) GetActiveProvider(category string) (string, map[string]interface{}) {
@@ -312,6 +330,8 @@ func (m *ProviderManager) UpdateCategoryConfig(ctx context.Context, category str
 	}
 
 	m.cache[category] = current
+	// Reset circuit breakers when provider configuration changes so newly updated credentials take effect immediately
+	m.circuitBreakers = make(map[string]*translation.CircuitBreaker)
 
 	// Broadcast hot reload to all nodes
 	if m.redis != nil {
@@ -485,7 +505,7 @@ func (m *ProviderManager) TranscribeAudio(ctx context.Context, audioBytes []byte
 	}
 
 	activeName, conf := m.GetActiveProvider("stt")
-	candidates := []string{activeName, "groq", "deepgram", "openai", "nvidia"}
+	candidates := []string{activeName, "groq", "deepgram", "openai", "azure", "nvidia"}
 	visited := make(map[string]bool)
 
 	for _, prov := range candidates {
@@ -513,8 +533,8 @@ func (m *ProviderManager) TranscribeAudio(ctx context.Context, audioBytes []byte
 			}
 			text, detectedLang, err := m.transcribeOpenAICompatible(ctx, "https://api.groq.com/openai/v1/audio/transcriptions", apiKey, model, audioBytes, filename, promptLang)
 			if err == nil && text != "" {
-				if detectedLang == "" {
-					detectedLang = DetectScriptLanguage(text)
+				if scriptLang := DetectScriptLanguage(text); scriptLang != "" {
+					detectedLang = scriptLang
 				}
 				return text, detectedLang, nil
 			}
@@ -525,12 +545,25 @@ func (m *ProviderManager) TranscribeAudio(ctx context.Context, audioBytes []byte
 			}
 			text, detectedLang, err := m.transcribeDeepgram(ctx, apiKey, model, audioBytes, promptLang)
 			if err == nil && text != "" {
-				if detectedLang == "" {
-					detectedLang = DetectScriptLanguage(text)
+				if scriptLang := DetectScriptLanguage(text); scriptLang != "" {
+					detectedLang = scriptLang
 				}
 				return text, detectedLang, nil
 			}
 			log.Printf("⚠️ Deepgram STT failed: %v", err)
+		} else if prov == "azure" {
+			region, _ := pConf["region"].(string)
+			if region == "" {
+				region = "eastus"
+			}
+			text, detectedLang, err := m.transcribeAzure(ctx, apiKey, region, audioBytes, promptLang)
+			if err == nil && text != "" {
+				if scriptLang := DetectScriptLanguage(text); scriptLang != "" {
+					detectedLang = scriptLang
+				}
+				return text, detectedLang, nil
+			}
+			log.Printf("⚠️ Azure STT failed: %v", err)
 		} else if prov == "nvidia" {
 			if model == "" {
 				model = "nvidia/canary-1b"
@@ -541,8 +574,8 @@ func (m *ProviderManager) TranscribeAudio(ctx context.Context, audioBytes []byte
 			}
 			text, detectedLang, err := m.transcribeOpenAICompatible(ctx, strings.TrimSuffix(endpoint, "/")+"/audio/transcriptions", apiKey, model, audioBytes, filename, promptLang)
 			if err == nil && text != "" {
-				if detectedLang == "" {
-					detectedLang = DetectScriptLanguage(text)
+				if scriptLang := DetectScriptLanguage(text); scriptLang != "" {
+					detectedLang = scriptLang
 				}
 				return text, detectedLang, nil
 			}
@@ -553,8 +586,8 @@ func (m *ProviderManager) TranscribeAudio(ctx context.Context, audioBytes []byte
 			}
 			text, detectedLang, err := m.transcribeOpenAICompatible(ctx, "https://api.openai.com/v1/audio/transcriptions", apiKey, model, audioBytes, filename, promptLang)
 			if err == nil && text != "" {
-				if detectedLang == "" {
-					detectedLang = DetectScriptLanguage(text)
+				if scriptLang := DetectScriptLanguage(text); scriptLang != "" {
+					detectedLang = scriptLang
 				}
 				return text, detectedLang, nil
 			}
@@ -578,7 +611,21 @@ func (m *ProviderManager) transcribeDeepgram(ctx context.Context, apiKey, model 
 		return "", "", err
 	}
 	req.Header.Set("Authorization", "Token "+apiKey)
-	req.Header.Set("Content-Type", "audio/webm")
+	contentType := "audio/webm"
+	if len(audioBytes) > 12 {
+		if bytes.HasPrefix(audioBytes, []byte("OggS")) {
+			contentType = "audio/ogg"
+		} else if len(audioBytes) > 8 && bytes.HasPrefix(audioBytes[4:8], []byte("ftyp")) {
+			contentType = "audio/mp4"
+		} else if bytes.HasPrefix(audioBytes, []byte("RIFF")) {
+			contentType = "audio/wav"
+		} else if bytes.HasPrefix(audioBytes, []byte("\x1a\x45\xdf\xa3")) {
+			contentType = "audio/webm"
+		} else if bytes.HasPrefix(audioBytes, []byte("ID3")) || (len(audioBytes) > 2 && audioBytes[0] == 0xFF && (audioBytes[1]&0xE0) == 0xE0) {
+			contentType = "audio/mpeg"
+		}
+	}
+	req.Header.Set("Content-Type", contentType)
 
 	resp, err := m.client.Do(req)
 	if err != nil {
@@ -622,19 +669,45 @@ func (m *ProviderManager) transcribeDeepgram(ctx context.Context, apiKey, model 
 	return "", "", errors.New("empty transcript from Deepgram")
 }
 
-// SynthesizeSpeech generates neural speech audio using the active TTS provider (ElevenLabs, OpenAI, Deepgram, Google)
+// SynthesizeSpeech generates neural speech audio using the active TTS provider (ElevenLabs, OpenAI, Azure, Deepgram, Google)
 func (m *ProviderManager) SynthesizeSpeech(ctx context.Context, text, lang string) ([]byte, string, error) {
-	if strings.TrimSpace(text) == "" {
+	cleanText := strings.TrimSpace(text)
+	if cleanText == "" {
 		return nil, "", errors.New("empty text for TTS")
+	}
+
+	normLang := NormalizeLanguageCode(lang)
+	if normLang == "" {
+		normLang = "en"
+	}
+
+	cacheKey := normLang + ":" + strings.ToLower(cleanText)
+	m.ttsMu.RLock()
+	if cachedAudio, ok := m.ttsAudioCache[cacheKey]; ok && len(cachedAudio) > 0 {
+		m.ttsMu.RUnlock()
+		return cachedAudio, "audio/mpeg", nil
+	}
+	m.ttsMu.RUnlock()
+
+	storeTTSCache := func(audio []byte) {
+		if len(audio) == 0 {
+			return
+		}
+		m.ttsMu.Lock()
+		if len(m.ttsAudioCache) >= 500 {
+			m.ttsAudioCache = make(map[string][]byte)
+		}
+		m.ttsAudioCache[cacheKey] = audio
+		m.ttsMu.Unlock()
 	}
 
 	activeName, conf := m.GetActiveProvider("tts")
 	// Multilingual adaptive routing: if active is English-only (like Deepgram) or fails,
-	// failover through OpenAI, ElevenLabs multilingual, and Google Universal Neural TTS
-	candidates := []string{activeName, "openai", "elevenlabs", "google"}
+	// failover through OpenAI, ElevenLabs multilingual, Azure, and Google Universal Neural TTS
+	candidates := []string{activeName, "openai", "elevenlabs", "azure", "google"}
 	visited := make(map[string]bool)
 
-	isEnglishTarget := strings.HasPrefix(strings.ToLower(lang), "en")
+	isEnglishTarget := strings.HasPrefix(strings.ToLower(normLang), "en")
 
 	for _, prov := range candidates {
 		if prov == "" || visited[prov] {
@@ -649,10 +722,8 @@ func (m *ProviderManager) SynthesizeSpeech(ctx context.Context, text, lang strin
 
 		switch prov {
 		case "deepgram":
-			// Deepgram Aura models are exclusively English.
-			// For non-English languages (Russian, Hindi, Spanish, French, etc.), skip to multilingual engines!
 			if !isEnglishTarget {
-				log.Printf("ℹ️ Deepgram Aura only supports English; dynamically routing %s TTS to multilingual engine", lang)
+				log.Printf("ℹ️ Deepgram Aura only supports English; dynamically routing %s TTS to multilingual engine", normLang)
 				continue
 			}
 
@@ -663,8 +734,9 @@ func (m *ProviderManager) SynthesizeSpeech(ctx context.Context, text, lang strin
 					if model == "" {
 						model = "aura-asteria-en"
 					}
-					audio, err := m.synthesizeDeepgram(ctx, apiKey, model, text)
+					audio, err := m.synthesizeDeepgram(ctx, apiKey, model, cleanText)
 					if err == nil && len(audio) > 0 {
+						storeTTSCache(audio)
 						return audio, "audio/mpeg", nil
 					}
 					log.Printf("⚠️ Deepgram Aura TTS failed: %v", err)
@@ -676,7 +748,6 @@ func (m *ProviderManager) SynthesizeSpeech(ctx context.Context, text, lang strin
 				apiKey, _ := pConf["apiKey"].(string)
 				if apiKey != "" {
 					model, _ := pConf["model"].(string)
-					// For non-English target languages (Russian, Hindi, etc.), enforce multilingual model
 					if !isEnglishTarget || model == "" {
 						model = "eleven_multilingual_v2"
 					}
@@ -684,8 +755,9 @@ func (m *ProviderManager) SynthesizeSpeech(ctx context.Context, text, lang strin
 					if voiceId == "" {
 						voiceId = "21m00Tcm4TlvDq8ikWAM"
 					}
-					audio, err := m.synthesizeElevenLabs(ctx, apiKey, model, voiceId, text)
+					audio, err := m.synthesizeElevenLabs(ctx, apiKey, model, voiceId, cleanText)
 					if err == nil && len(audio) > 0 {
+						storeTTSCache(audio)
 						return audio, "audio/mpeg", nil
 					}
 					log.Printf("⚠️ ElevenLabs TTS failed: %v", err)
@@ -704,17 +776,36 @@ func (m *ProviderManager) SynthesizeSpeech(ctx context.Context, text, lang strin
 					if voice == "" {
 						voice = "alloy"
 					}
-					audio, err := m.synthesizeOpenAI(ctx, apiKey, model, voice, text)
+					audio, err := m.synthesizeOpenAI(ctx, apiKey, model, voice, cleanText)
 					if err == nil && len(audio) > 0 {
+						storeTTSCache(audio)
 						return audio, "audio/mpeg", nil
 					}
 					log.Printf("⚠️ OpenAI TTS failed: %v", err)
 				}
 			}
 
+		case "azure":
+			if pConf != nil {
+				apiKey, _ := pConf["apiKey"].(string)
+				region, _ := pConf["region"].(string)
+				if region == "" {
+					region = "eastus"
+				}
+				if apiKey != "" {
+					audio, err := m.synthesizeAzure(ctx, apiKey, region, cleanText, normLang)
+					if err == nil && len(audio) > 0 {
+						storeTTSCache(audio)
+						return audio, "audio/mpeg", nil
+					}
+					log.Printf("⚠️ Azure TTS failed: %v", err)
+				}
+			}
+
 		case "google":
-			audio, err := m.synthesizeGoogle(ctx, text, lang)
+			audio, err := m.synthesizeGoogle(ctx, cleanText, normLang)
 			if err == nil && len(audio) > 0 {
+				storeTTSCache(audio)
 				return audio, "audio/mpeg", nil
 			}
 			log.Printf("⚠️ Google Universal TTS failed: %v", err)
@@ -805,33 +896,197 @@ func (m *ProviderManager) synthesizeDeepgram(ctx context.Context, apiKey, model,
 }
 
 func (m *ProviderManager) synthesizeGoogle(ctx context.Context, text, lang string) ([]byte, error) {
-	ttsURL := fmt.Sprintf("https://translate.google.com/translate_tts?ie=UTF-8&tl=%s&client=tw-ob&q=%s",
-		url.QueryEscape(lang),
-		url.QueryEscape(text),
-	)
-	req, err := http.NewRequestWithContext(ctx, "GET", ttsURL, nil)
+	runes := []rune(strings.TrimSpace(text))
+	if len(runes) == 0 {
+		return nil, errors.New("empty text")
+	}
+
+	// Split into safe <=180 rune chunks so Google translate_tts never returns HTTP 400 on long multi-byte text
+	var chunks []string
+	for len(runes) > 0 {
+		if len(runes) <= 180 {
+			chunks = append(chunks, string(runes))
+			break
+		}
+		splitAt := 180
+		for i := 180; i > 80; i-- {
+			r := runes[i]
+			if r == ' ' || r == '.' || r == ',' || r == '!' || r == '?' || r == '।' {
+				splitAt = i + 1
+				break
+			}
+		}
+		chunks = append(chunks, strings.TrimSpace(string(runes[:splitAt])))
+		runes = runes[splitAt:]
+	}
+
+	var combined bytes.Buffer
+	for _, chunk := range chunks {
+		if chunk == "" {
+			continue
+		}
+		ttsURL := fmt.Sprintf("https://translate.google.com/translate_tts?ie=UTF-8&tl=%s&client=tw-ob&q=%s",
+			url.QueryEscape(lang),
+			url.QueryEscape(chunk),
+		)
+		req, err := http.NewRequestWithContext(ctx, "GET", ttsURL, nil)
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36")
+
+		resp, err := m.client.Do(req)
+		if err != nil {
+			return nil, err
+		}
+		if resp.StatusCode != http.StatusOK {
+			resp.Body.Close()
+			return nil, fmt.Errorf("Google TTS HTTP %d", resp.StatusCode)
+		}
+		b, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if err != nil {
+			return nil, err
+		}
+		combined.Write(b)
+	}
+
+	if combined.Len() == 0 {
+		return nil, errors.New("empty audio from Google TTS")
+	}
+	return combined.Bytes(), nil
+}
+
+func (m *ProviderManager) synthesizeAzure(ctx context.Context, apiKey, region, text, lang string) ([]byte, error) {
+	voiceMap := map[string]struct{ locale, voice string }{
+		"en": {"en-US", "en-US-JennyNeural"},
+		"hi": {"hi-IN", "hi-IN-SwaraNeural"},
+		"ru": {"ru-RU", "ru-RU-SvetlanaNeural"},
+		"es": {"es-ES", "es-ES-ElviraNeural"},
+		"fr": {"fr-FR", "fr-FR-DeniseNeural"},
+		"de": {"de-DE", "de-DE-KatjaNeural"},
+		"ja": {"ja-JP", "ja-JP-NanamiNeural"},
+		"zh": {"zh-CN", "zh-CN-XiaoxiaoNeural"},
+		"ar": {"ar-SA", "ar-SA-ZariyahNeural"},
+		"pt": {"pt-BR", "pt-BR-FranciscaNeural"},
+		"it": {"it-IT", "it-IT-ElsaNeural"},
+		"ko": {"ko-KR", "ko-KR-SunHiNeural"},
+	}
+	v, ok := voiceMap[strings.ToLower(lang)]
+	if !ok {
+		v = voiceMap["en"]
+	}
+	escaped := strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;", "\"", "&quot;", "'", "&apos;").Replace(text)
+	ssml := fmt.Sprintf(`<speak version='1.0' xml:lang='%s'><voice xml:lang='%s' name='%s'>%s</voice></speak>`, v.locale, v.locale, v.voice, escaped)
+	endpoint := fmt.Sprintf("https://%s.tts.speech.microsoft.com/cognitiveservices/v1", region)
+	req, err := http.NewRequestWithContext(ctx, "POST", endpoint, strings.NewReader(ssml))
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36")
-
+	req.Header.Set("Ocp-Apim-Subscription-Key", apiKey)
+	req.Header.Set("Content-Type", "application/ssml+xml")
+	req.Header.Set("X-Microsoft-OutputFormat", "audio-24khz-48kbitrate-mono-mp3")
 	resp, err := m.client.Do(req)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
-
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("Google TTS HTTP %d", resp.StatusCode)
+		b, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("Azure TTS HTTP %d: %s", resp.StatusCode, string(b))
 	}
 	return io.ReadAll(resp.Body)
+}
+
+func (m *ProviderManager) transcribeAzure(ctx context.Context, apiKey, region string, audioBytes []byte, promptLang string) (string, string, error) {
+	localeMap := map[string]string{
+		"en": "en-US", "hi": "hi-IN", "ru": "ru-RU", "es": "es-ES",
+		"fr": "fr-FR", "de": "de-DE", "ja": "ja-JP", "zh": "zh-CN",
+		"ar": "ar-SA", "pt": "pt-BR", "it": "it-IT", "ko": "ko-KR",
+	}
+	norm := NormalizeLanguageCode(promptLang)
+	locale := localeMap[norm]
+	if locale == "" {
+		locale = "en-US"
+	}
+	endpoint := fmt.Sprintf("https://%s.stt.speech.microsoft.com/speech/recognition/conversation/cognitiveservices/v1?language=%s", region, url.QueryEscape(locale))
+	req, err := http.NewRequestWithContext(ctx, "POST", endpoint, bytes.NewReader(audioBytes))
+	if err != nil {
+		return "", "", err
+	}
+	req.Header.Set("Ocp-Apim-Subscription-Key", apiKey)
+	if bytes.HasPrefix(audioBytes, []byte("RIFF")) {
+		req.Header.Set("Content-Type", "audio/wav; codecs=audio/pcm; samplerate=16000")
+	} else {
+		req.Header.Set("Content-Type", "audio/ogg; codecs=opus")
+	}
+	resp, err := m.client.Do(req)
+	if err != nil {
+		return "", "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		return "", "", fmt.Errorf("Azure STT HTTP %d: %s", resp.StatusCode, string(b))
+	}
+	var azResp struct {
+		RecognitionStatus string `json:"RecognitionStatus"`
+		DisplayText       string `json:"DisplayText"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&azResp); err != nil {
+		return "", "", err
+	}
+	text := strings.TrimSpace(azResp.DisplayText)
+	if text == "" || isWhisperHallucination(text) {
+		return "", "", errors.New("empty transcript from Azure")
+	}
+	return text, norm, nil
+}
+
+// isWhisperHallucination filters out common Whisper silence/noise hallucinations
+func isWhisperHallucination(text string) bool {
+	clean := strings.ToLower(strings.TrimSpace(text))
+	clean = strings.Trim(clean, ".!,?…-—\"'()[] ")
+	if clean == "" {
+		return true
+	}
+	hallucinations := map[string]bool{
+		"thank you":                        true,
+		"thank you for watching":           true,
+		"thanks for watching":              true,
+		"subscribe to my channel":          true,
+		"please subscribe":                 true,
+		"subtitles by the amara.org community": true,
+		"amara.org":                        true,
+		"субтитры сделал dimatorzok":       true,
+		"субтитры создавал dimatorzok":     true,
+		"субтитры подогнал «симон»":        true,
+		"редактор субтитров":               true,
+		"продолжение следует":              true,
+		"спасибо за просмотр":              true,
+		"mbc 뉴스":                           true,
+		"you":                              true,
+	}
+	if hallucinations[clean] {
+		return true
+	}
+	if strings.Contains(clean, "dimatorzok") || strings.Contains(clean, "amara.org") || strings.Contains(clean, "редактор субтитров") {
+		return true
+	}
+	return false
 }
 
 func (m *ProviderManager) transcribeOpenAICompatible(ctx context.Context, endpoint, apiKey, model string, audioBytes []byte, filename, promptLang string) (string, string, error) {
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)
 
-	part, err := writer.CreateFormFile("file", filename)
+	partFilename := filename
+	if bytes.HasPrefix(audioBytes, []byte("RIFF")) {
+		partFilename = "speech.wav"
+	} else if !strings.Contains(partFilename, ".") {
+		partFilename = "audio.webm"
+	}
+	part, err := writer.CreateFormFile("file", partFilename)
 	if err != nil {
 		return "", "", err
 	}
@@ -841,9 +1096,10 @@ func (m *ProviderManager) transcribeOpenAICompatible(ctx context.Context, endpoi
 
 	_ = writer.WriteField("model", model)
 	_ = writer.WriteField("response_format", "verbose_json")
+	_ = writer.WriteField("temperature", "0")
 	isAuto := promptLang == "" || strings.EqualFold(promptLang, "auto") || strings.EqualFold(promptLang, "detect")
 	if !isAuto {
-		_ = writer.WriteField("language", promptLang)
+		_ = writer.WriteField("language", NormalizeLanguageCode(promptLang))
 	}
 
 	if err := writer.Close(); err != nil {
@@ -871,11 +1127,35 @@ func (m *ProviderManager) transcribeOpenAICompatible(ctx context.Context, endpoi
 	var res struct {
 		Text     string `json:"text"`
 		Language string `json:"language"`
+		Segments []struct {
+			Text         string  `json:"text"`
+			NoSpeechProb float64 `json:"no_speech_prob"`
+		} `json:"segments"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&res); err != nil {
 		return "", "", err
 	}
-	return strings.TrimSpace(res.Text), NormalizeLanguageCode(res.Language), nil
+
+	// Filter out segments that Whisper flags as high probability of silence/noise
+	if len(res.Segments) > 0 {
+		var kept []string
+		for _, seg := range res.Segments {
+			if seg.NoSpeechProb < 0.85 && strings.TrimSpace(seg.Text) != "" {
+				kept = append(kept, strings.TrimSpace(seg.Text))
+			}
+		}
+		if len(kept) == 0 {
+			return "", "", errors.New("no active speech in audio segment")
+		}
+		res.Text = strings.Join(kept, " ")
+	}
+
+	trimmed := strings.TrimSpace(res.Text)
+	if trimmed == "" || isWhisperHallucination(trimmed) {
+		return "", "", errors.New("filtered empty or hallucinated transcript")
+	}
+
+	return trimmed, NormalizeLanguageCode(res.Language), nil
 }
 
 
@@ -1194,6 +1474,21 @@ func (m *ProviderManager) translateGoogleGTX(ctx context.Context, texts []string
 
 func extractTranslations(raw string, expectedCount int) ([]string, bool) {
 	raw = strings.TrimSpace(raw)
+
+	// Strip <think>...</think> reasoning blocks emitted by reasoning models
+	for {
+		tStart := strings.Index(raw, "<think>")
+		if tStart == -1 {
+			break
+		}
+		tEnd := strings.Index(raw[tStart:], "</think>")
+		if tEnd == -1 {
+			raw = strings.TrimSpace(raw[:tStart])
+			break
+		}
+		raw = strings.TrimSpace(raw[:tStart] + " " + raw[tStart+tEnd+len("</think>"):])
+	}
+
 	raw = strings.TrimPrefix(raw, "```json")
 	raw = strings.TrimPrefix(raw, "```")
 	raw = strings.TrimSuffix(raw, "```")
@@ -1263,6 +1558,38 @@ func cleanTranslations(list []string) []string {
 	return cleaned
 }
 
+func languageDisplayName(code string) string {
+	norm := NormalizeLanguageCode(code)
+	names := map[string]string{
+		"en": "English (en)",
+		"hi": "Hindi in Devanagari script (hi)",
+		"ru": "Russian in Cyrillic script (ru)",
+		"es": "Spanish (es)",
+		"fr": "French (fr)",
+		"de": "German (de)",
+		"ja": "Japanese (ja)",
+		"zh": "Chinese (zh)",
+		"ar": "Arabic (ar)",
+		"pt": "Portuguese (pt)",
+		"it": "Italian (it)",
+		"ko": "Korean (ko)",
+		"tr": "Turkish (tr)",
+		"bn": "Bengali (bn)",
+		"ta": "Tamil (ta)",
+		"te": "Telugu (te)",
+		"mr": "Marathi (mr)",
+		"ur": "Urdu (ur)",
+		"gu": "Gujarati (gu)",
+	}
+	if label, ok := names[norm]; ok {
+		return label
+	}
+	if norm != "" {
+		return norm
+	}
+	return code
+}
+
 func (m *ProviderManager) translateLLM(ctx context.Context, providerName string, conf map[string]interface{}, texts []string, sourceLang, targetLang string) ([]string, error) {
 	apiKey, _ := conf["apiKey"].(string)
 	endpoint, _ := conf["endpoint"].(string)
@@ -1275,11 +1602,11 @@ func (m *ProviderManager) translateLLM(ctx context.Context, providerName string,
 
 	if providerName == "groq" {
 		defaultEndpoint = "https://api.groq.com/openai/v1"
-		defaultModel = "qwen/qwen3.8-27b"
-		if model == "" || model == "llama-3.3-70b-versatile" {
-			model = "qwen/qwen3.8-27b"
+		defaultModel = "llama-3.3-70b-versatile"
+		if model == "" || model == "qwen/qwen3.8-27b" {
+			model = defaultModel
 		}
-		modelCandidates = []string{model, "qwen/qwen3.8-27b", "openai/gpt-oss-120b", "openai/gpt-oss-20b"}
+		modelCandidates = []string{model, "llama-3.3-70b-versatile", "llama-3.1-8b-instant", "openai/gpt-oss-20b", "openai/gpt-oss-120b"}
 	} else if providerName == "openrouter" {
 		defaultEndpoint = "https://openrouter.ai/api/v1"
 		defaultModel = "meta-llama/llama-3.3-70b-instruct"
@@ -1297,7 +1624,12 @@ func (m *ProviderManager) translateLLM(ctx context.Context, providerName string,
 	}
 
 	jsonTexts, _ := json.Marshal(texts)
-	prompt := fmt.Sprintf("Translate the following JSON array of strings into target language %q. Return ONLY a valid JSON array of translated strings in the exact same order with no markdown formatting or extra text:\n%s", targetLang, string(jsonTexts))
+	targetLabel := languageDisplayName(targetLang)
+	sourceClause := ""
+	if sourceLang != "" && !strings.EqualFold(sourceLang, "auto") {
+		sourceClause = fmt.Sprintf(" from %s", languageDisplayName(sourceLang))
+	}
+	prompt := fmt.Sprintf("Translate the following JSON array of spoken utterances%s into %s. Preserve natural conversational meaning. Return ONLY a valid JSON array of translated strings in the exact same order with no markdown formatting or extra text:\n%s", sourceClause, targetLabel, string(jsonTexts))
 
 	var lastErr error
 	visitedModels := make(map[string]bool)
@@ -1311,10 +1643,11 @@ func (m *ProviderManager) translateLLM(ctx context.Context, providerName string,
 		reqBody := map[string]interface{}{
 			"model": tryModel,
 			"messages": []map[string]string{
-				{"role": "system", "content": "You are an ultra-fast real-time speech and chat translator. Respond only with raw JSON array."},
+				{"role": "system", "content": "You are an ultra-fast real-time speech and chat translator. Respond only with a raw JSON string array."},
 				{"role": "user", "content": prompt},
 			},
-			"temperature": 0.2,
+			"temperature": 0.1,
+			"max_tokens":  800,
 		}
 
 		reqBytes, _ := json.Marshal(reqBody)
@@ -1339,11 +1672,11 @@ func (m *ProviderManager) translateLLM(ctx context.Context, providerName string,
 			respBytes, _ := io.ReadAll(resp.Body)
 			resp.Body.Close()
 			lastErr = fmt.Errorf("provider returned HTTP %d: %s", resp.StatusCode, string(respBytes))
-			// If 404 (model not found), try next model candidate in list
-			if resp.StatusCode == http.StatusNotFound {
-				continue
+			// Only abort immediately on authentication failure; for 400/404/429/5xx try next model candidate
+			if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+				return nil, lastErr
 			}
-			return nil, lastErr
+			continue
 		}
 
 		var chatResp struct {
@@ -1626,9 +1959,9 @@ func (m *ProviderManager) getDefaultCatalogForCategory(category string) map[stri
 				"groq": map[string]interface{}{
 					"name":         "Groq (Ultra-Fast LPU Inference)",
 					"apiKey":       "",
-					"model":        "qwen/qwen3.8-27b",
+					"model":        "llama-3.3-70b-versatile",
 					"endpoint":     "https://api.groq.com/openai/v1",
-					"description":  "Groq LPU Engine (~1,000 tok/sec Qwen 3.8 / Llama)",
+					"description":  "Groq LPU Engine (~1,000 tok/sec Llama 3.3 / GPT-OSS)",
 					"isConfigured": false,
 				},
 				"openrouter": map[string]interface{}{
@@ -1828,24 +2161,44 @@ func (m *ProviderManager) decrypt(cipherText string) string {
 	if err != nil {
 		return cipherText
 	}
-	block, err := aes.NewCipher(m.encryptionKey)
-	if err != nil {
-		return cipherText
+
+	// Try candidate keys: configured key, key without trailing '!' (legacy), and key with trailing '!'
+	var candidateKeys [][]byte
+	candidateKeys = append(candidateKeys, m.encryptionKey)
+	if len(m.encryptionKey) > 0 {
+		trimmedStr := strings.TrimRight(string(m.encryptionKey), "! \t\r\n\x00")
+		tKey := []byte(trimmedStr)
+		padded := make([]byte, 32)
+		copy(padded, tKey)
+		candidateKeys = append(candidateKeys, padded)
+
+		plusExcl := []byte(trimmedStr + "!")
+		paddedExcl := make([]byte, 32)
+		copy(paddedExcl, plusExcl)
+		candidateKeys = append(candidateKeys, paddedExcl)
 	}
-	gcm, err := cipher.NewGCM(block)
-	if err != nil {
-		return cipherText
+
+	for _, k := range candidateKeys {
+		block, err := aes.NewCipher(k)
+		if err != nil {
+			continue
+		}
+		gcm, err := cipher.NewGCM(block)
+		if err != nil {
+			continue
+		}
+		nonceSize := gcm.NonceSize()
+		if len(data) < nonceSize {
+			continue
+		}
+		nonce, cipherBytes := data[:nonceSize], data[nonceSize:]
+		plain, err := gcm.Open(nil, nonce, cipherBytes, nil)
+		if err == nil {
+			return string(plain)
+		}
 	}
-	nonceSize := gcm.NonceSize()
-	if len(data) < nonceSize {
-		return cipherText
-	}
-	nonce, cipherBytes := data[:nonceSize], data[nonceSize:]
-	plain, err := gcm.Open(nil, nonce, cipherBytes, nil)
-	if err != nil {
-		return cipherText
-	}
-	return string(plain)
+
+	return cipherText
 }
 
 // NormalizeLanguageCode standardizes language codes and model-returned names (e.g. "Russian" -> "ru", "Hindi" -> "hi")

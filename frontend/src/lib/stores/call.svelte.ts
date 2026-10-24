@@ -14,6 +14,15 @@ import { callSpeechService } from '#lib/services/callSpeech';
 import { authStore } from '#lib/stores/auth.svelte';
 import { settingsStore } from '#lib/stores/settings.svelte';
 
+// Calls and speech recognition must consume the microphone only. In particular,
+// never allow a screen-share capture to add system/tab audio to the call.
+const MIC_CAPTURE_OPTIONS = {
+	echoCancellation: true,
+	noiseSuppression: true,
+	autoGainControl: true,
+	channelCount: 1
+} as const;
+
 export interface Subtitle {
 	id: string;
 	speakerName: string;
@@ -58,8 +67,54 @@ class CallStore {
 	incomingCall = $state<IncomingCallData | null>(null);
 	subtitles = $state<Subtitle[]>([]);
 
-	// Remote participants state
+	// Remote participants state & live language map (user_id -> preferred_language)
 	participants = $state<RemoteParticipant[]>([]);
+	participantLanguages = $state<Record<string, string>>({});
+
+	// Audio suppression & translation routing state
+	isTranslationActive = $state<boolean>(false);
+	suppressOriginalAudio = $state<boolean>(true); // Default: true (suppress original speech so only translated voice is heard)
+	isTTSPlaying = $state<boolean>(false);
+
+	get shouldMuteRemoteAudio(): boolean {
+		if (this.isTTSPlaying) return true;
+		if (this.isTranslationActive && this.suppressOriginalAudio) return true;
+		return false;
+	}
+
+	toggleSuppressOriginalAudio() {
+		this.suppressOriginalAudio = !this.suppressOriginalAudio;
+	}
+
+	private syncParticipantMetadata(p: RemoteParticipant) {
+		if (!p?.identity || !p.metadata) return;
+		try {
+			const meta = JSON.parse(p.metadata);
+			if (meta?.preferred_language) {
+				this.participantLanguages = {
+					...this.participantLanguages,
+					[p.identity]: String(meta.preferred_language).toLowerCase().trim()
+				};
+			}
+		} catch {}
+	}
+
+	private syncAllRemoteParticipants(room: Room) {
+		const list = Array.from(room.remoteParticipants.values());
+		this.participants = list;
+		const nextLangs = { ...this.participantLanguages };
+		for (const p of list) {
+			if (p.metadata) {
+				try {
+					const meta = JSON.parse(p.metadata);
+					if (meta?.preferred_language) {
+						nextLangs[p.identity] = String(meta.preferred_language).toLowerCase().trim();
+					}
+				} catch {}
+			}
+		}
+		this.participantLanguages = nextLangs;
+	}
 
 	initListeners() {
 		wsClient.on('incoming_call', (payload: IncomingCallData) => {
@@ -87,20 +142,57 @@ class CallStore {
 			}
 		});
 
-		wsClient.on('subtitle_update', (sub: Subtitle) => {
-			this.subtitles = [...this.subtitles.slice(-8), sub];
-			if (settingsStore.preferences.callTranslationMode !== 'disabled') {
-				const isTestingAlone = this.participants.length === 0;
-				const isFromOther = sub.speakerId !== authStore.user?.id;
-
-				if (isTestingAlone || isFromOther) {
-					const myLang = (authStore.user?.preferred_language || 'en').toLowerCase();
-					if (sub.translatedText && (sub.language.toLowerCase() === myLang || isTestingAlone)) {
-						callSpeechService.speak(sub.translatedText, sub.language, sub.audio_url);
-					}
-				}
+		wsClient.on('user_language_updated', (data?: { user_id?: string; preferred_language?: string }) => {
+			if (data?.user_id && data?.preferred_language) {
+				this.participantLanguages = {
+					...this.participantLanguages,
+					[data.user_id]: data.preferred_language.toLowerCase().trim()
+				};
 			}
 		});
+
+		wsClient.on('subtitle_update', (sub: Subtitle) => {
+			this.handleSubtitleUpdate(sub);
+		});
+
+		callSpeechService.setOnSubtitle((sub: any) => {
+			this.handleSubtitleUpdate(sub);
+		});
+
+		callSpeechService.setOnTTSPlaybackStateChange((isPlaying: boolean) => {
+			this.isTTSPlaying = isPlaying;
+		});
+	}
+
+	handleSubtitleUpdate(sub: Subtitle) {
+		if (sub.call_room_id && this.currentCallRoomId && sub.call_room_id !== this.currentCallRoomId) {
+			return;
+		}
+		if (sub.id && this.subtitles.some((s) => s.id === sub.id)) {
+			return;
+		}
+		console.log('💬 Subtitle received for call room:', sub);
+		this.subtitles = [...this.subtitles.slice(-8), sub];
+		if (settingsStore.preferences.callTranslationMode !== 'disabled') {
+			const isTestingAlone = this.participants.length === 0;
+			const isFromOther = sub.speakerId !== authStore.user?.id;
+
+			if (isTestingAlone || isFromOther) {
+				const myLang = (authStore.user?.preferred_language || 'en').toLowerCase().trim();
+				const subLang = (sub.language || '').toLowerCase().trim();
+				const isDirectOneOnOne = this.participants.length <= 1;
+				const langMatches =
+					!subLang ||
+					subLang === myLang ||
+					subLang.startsWith(myLang) ||
+					myLang.startsWith(subLang) ||
+					isDirectOneOnOne;
+
+				if (sub.translatedText && (langMatches || isTestingAlone)) {
+					callSpeechService.speak(sub.translatedText, sub.language || myLang, sub.audio_url);
+				}
+			}
+		}
 	}
 
 	async startOutgoingCall(recipientName: string, callRoomId: string, type: 'audio' | 'video' = 'video', isGroup = false) {
@@ -147,13 +239,15 @@ class CallStore {
 			// 2. Connect to LiveKit Room
 			const room = new Room({
 				adaptiveStream: true,
-				dynacast: true
+				dynacast: true,
+				audioCaptureDefaults: MIC_CAPTURE_OPTIONS
 			});
 
 			this.room = room;
 
-			room.on(RoomEvent.ParticipantConnected, () => {
-				this.participants = Array.from(room.remoteParticipants.values());
+			room.on(RoomEvent.ParticipantConnected, (p) => {
+				this.syncAllRemoteParticipants(room);
+				this.syncParticipantMetadata(p);
 				if (this.isCallingOut) {
 					this.isCallingOut = false;
 					callSounds.stopAll();
@@ -162,7 +256,14 @@ class CallStore {
 			});
 
 			room.on(RoomEvent.ParticipantDisconnected, () => {
-				this.participants = Array.from(room.remoteParticipants.values());
+				this.syncAllRemoteParticipants(room);
+			});
+
+			room.on(RoomEvent.ParticipantMetadataChanged, (_prevMetadata, p) => {
+				if (p && p !== room.localParticipant) {
+					this.syncParticipantMetadata(p as RemoteParticipant);
+				}
+				this.syncAllRemoteParticipants(room);
 			});
 
 			room.on(RoomEvent.Disconnected, () => {
@@ -193,6 +294,10 @@ class CallStore {
 				if (pub.source === Track.Source.Camera && pub.videoTrack) {
 					this.localVideoTrack = pub.videoTrack as LocalVideoTrack;
 				}
+				if (pub.source === Track.Source.Microphone && pub.audioTrack?.mediaStreamTrack) {
+					this.localStream = new MediaStream([pub.audioTrack.mediaStreamTrack]);
+					callSpeechService.updateStream(this.localStream);
+				}
 			});
 
 			room.localParticipant.on(ParticipantEvent.LocalTrackUnpublished, (pub) => {
@@ -203,30 +308,37 @@ class CallStore {
 
 			if (type === 'video') {
 				try {
-					await room.localParticipant.enableCameraAndMicrophone();
+					await room.localParticipant.setCameraEnabled(true);
+					await room.localParticipant.setMicrophoneEnabled(true, MIC_CAPTURE_OPTIONS);
 					const camPub = room.localParticipant.getTrackPublication(Track.Source.Camera);
 					if (camPub?.videoTrack) {
 						this.localVideoTrack = camPub.videoTrack as LocalVideoTrack;
+					}
+					const micPub = room.localParticipant.getTrackPublication(Track.Source.Microphone);
+					if (micPub?.audioTrack?.mediaStreamTrack) {
+						this.localStream = new MediaStream([micPub.audioTrack.mediaStreamTrack]);
 					}
 				} catch (mediaErr) {
 					console.warn('Failed to publish camera to LiveKit, using getUserMedia fallback:', mediaErr);
 					await this.fallbackLocalCamera(true);
 				}
 			} else {
-				await room.localParticipant.setMicrophoneEnabled(true);
+				await room.localParticipant.setMicrophoneEnabled(true, MIC_CAPTURE_OPTIONS);
 				await room.localParticipant.setCameraEnabled(false);
 				this.isCameraOff = true;
+				const micPub = room.localParticipant.getTrackPublication(Track.Source.Microphone);
+				if (micPub?.audioTrack?.mediaStreamTrack) {
+					this.localStream = new MediaStream([micPub.audioTrack.mediaStreamTrack]);
+				}
 			}
 
-			this.participants = Array.from(room.remoteParticipants.values());
+			this.syncAllRemoteParticipants(room);
 			this.isInCall = true;
 			this.incomingCall = null;
 		} catch (err) {
 			console.warn('LiveKit SFU connection error, initializing local fallback:', err);
 			// Fallback: If LiveKit server is unreachable, keep call UI alive with local camera
-			if (type === 'video') {
-				await this.fallbackLocalCamera(true);
-			}
+			await this.fallbackLocalCamera(type === 'video');
 			this.isInCall = true;
 			this.incomingCall = null;
 		} finally {
@@ -239,7 +351,7 @@ class CallStore {
 			if (typeof navigator !== 'undefined' && navigator.mediaDevices) {
 				const stream = await navigator.mediaDevices.getUserMedia({
 					video: enableVideo,
-					audio: true
+					audio: MIC_CAPTURE_OPTIONS
 				});
 				this.localStream = stream;
 			}
@@ -253,6 +365,13 @@ class CallStore {
 		callSpeechService.setMuted(this.isMuted);
 		if (this.room?.localParticipant) {
 			await this.room.localParticipant.setMicrophoneEnabled(!this.isMuted);
+			if (!this.isMuted) {
+				const micPub = this.room.localParticipant.getTrackPublication(Track.Source.Microphone);
+				if (micPub?.audioTrack?.mediaStreamTrack) {
+					this.localStream = new MediaStream([micPub.audioTrack.mediaStreamTrack]);
+					callSpeechService.updateStream(this.localStream);
+				}
+			}
 		}
 		if (this.localStream) {
 			this.localStream.getAudioTracks().forEach((t) => (t.enabled = !this.isMuted));
@@ -278,7 +397,10 @@ class CallStore {
 	async toggleScreenShare() {
 		if (!this.room?.localParticipant) return;
 		this.isScreenSharing = !this.isScreenSharing;
-		await this.room.localParticipant.setScreenShareEnabled(this.isScreenSharing);
+		await this.room.localParticipant.setScreenShareEnabled(this.isScreenSharing, {
+			audio: false,
+			systemAudio: 'exclude'
+		});
 	}
 
 	leaveCall() {
@@ -286,6 +408,9 @@ class CallStore {
 		callSounds.stopAll();
 		this.isCallingOut = false;
 		this.callingRecipientName = '';
+		this.isTTSPlaying = false;
+		this.isTranslationActive = false;
+		this.suppressOriginalAudio = true;
 
 		if (this.localVideoTrack) {
 			this.localVideoTrack.stop();
@@ -312,6 +437,7 @@ class CallStore {
 		this.incomingCall = null;
 		this.subtitles = [];
 		this.participants = [];
+		this.participantLanguages = {};
 	}
 }
 

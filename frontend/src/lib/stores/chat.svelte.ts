@@ -69,6 +69,27 @@ class ChatStore {
 			);
 		});
 
+		wsClient.on('user_language_updated', (data: { user_id: string; preferred_language: string }) => {
+			if (!data?.user_id || !data?.preferred_language) return;
+			this.rooms = this.rooms.map((room) =>
+				room.other_user?.id === data.user_id
+					? { ...room, other_user: { ...room.other_user, preferred_language: data.preferred_language } }
+					: room
+			);
+			if (this.activeRoom?.other_user?.id === data.user_id) {
+				this.activeRoom = {
+					...this.activeRoom,
+					other_user: {
+						...this.activeRoom.other_user,
+						preferred_language: data.preferred_language
+					}
+				};
+			}
+			this.activeMembers = this.activeMembers.map((member) =>
+				member.user_id === data.user_id ? { ...member, preferred_language: data.preferred_language } : member
+			);
+		});
+
 		wsClient.on('chat_message', (msg: Message) => {
 			if (this.activeRoom && msg.room_id === this.activeRoom.id) {
 				this.messages = [...this.messages, msg];

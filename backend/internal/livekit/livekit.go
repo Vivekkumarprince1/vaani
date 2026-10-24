@@ -44,12 +44,18 @@ func (m *Manager) GenerateToken(roomSlug, identity, name, metadata string) (stri
 	}
 
 	at := auth.NewAccessToken(m.apiKey, m.apiSecret)
+	canPublish := true
+	canSubscribe := true
+	canPublishData := true
+	canUpdateOwnMetadata := true
+
 	grant := &auth.VideoGrant{
-		RoomJoin:       true,
-		Room:           roomSlug,
-		CanPublish:     &[]bool{true}[0],
-		CanSubscribe:   &[]bool{true}[0],
-		CanPublishData: &[]bool{true}[0],
+		RoomJoin:             true,
+		Room:                 roomSlug,
+		CanPublish:           &canPublish,
+		CanSubscribe:         &canSubscribe,
+		CanPublishData:       &canPublishData,
+		CanUpdateOwnMetadata: &canUpdateOwnMetadata,
 	}
 
 	at.AddGrant(grant).

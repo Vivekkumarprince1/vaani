@@ -85,11 +85,10 @@
 					{ id: 'distil-whisper-large-v3-en', label: 'Distil-Whisper English', tag: 'English Only', desc: 'Lightweight distilled English speech recognition' }
 				],
 				translation: [
-					{ id: 'qwen/qwen3.8-27b', label: 'Qwen 3.8 27B', tag: 'Fastest (~30ms)', desc: 'Ultra-fast high-accuracy multilingual translation running on Groq LPUs' },
+					{ id: 'llama-3.3-70b-versatile', label: 'Llama 3.3 70B Versatile', tag: 'Recommended (~40ms)', desc: 'State-of-the-art multilingual translation at blazing speed on Groq LPUs' },
+					{ id: 'llama-3.1-8b-instant', label: 'Llama 3.1 8B Instant', tag: 'Ultra-Fast', desc: 'Extremely lightweight and instant response translation' },
 					{ id: 'openai/gpt-oss-120b', label: 'GPT-OSS 120B', tag: 'Deep Context', desc: 'Powerful 120B multilingual reasoning model on Groq' },
-					{ id: 'openai/gpt-oss-20b', label: 'GPT-OSS 20B', tag: 'Lightweight', desc: 'Fast open-source 20B translation model' },
-					{ id: 'llama-3.3-70b-versatile', label: 'Llama 3.3 70B Versatile', tag: 'Standard', desc: 'State-of-the-art multilingual reasoning at blazing speed' },
-					{ id: 'llama-3.1-8b-instant', label: 'Llama 3.1 8B Instant', tag: 'Ultra-Fast', desc: 'Extremely lightweight and instant response translation' }
+					{ id: 'openai/gpt-oss-20b', label: 'GPT-OSS 20B', tag: 'Lightweight', desc: 'Fast open-source 20B translation model' }
 				]
 			}
 		},
@@ -1139,9 +1138,9 @@
 										id="gqModel"
 										type="text"
 										disabled={!isSuperAdmin}
-										value={getFieldValue('groq', 'model') || (activeStage === 'stt' ? 'whisper-large-v3-turbo' : 'qwen/qwen3.8-27b')}
+										value={getFieldValue('groq', 'model') || (activeStage === 'stt' ? 'whisper-large-v3-turbo' : 'llama-3.3-70b-versatile')}
 										oninput={(e) => handleFieldChange('groq', 'model', (e.target as HTMLInputElement).value)}
-										placeholder={activeStage === 'stt' ? 'whisper-large-v3-turbo' : 'qwen/qwen3.8-27b'}
+										placeholder={activeStage === 'stt' ? 'whisper-large-v3-turbo' : 'llama-3.3-70b-versatile'}
 										class="w-full px-3.5 py-2 text-xs bg-white dark:bg-neutral-950 border border-neutral-300 dark:border-neutral-800 rounded-xl text-neutral-900 dark:text-neutral-100 placeholder:text-neutral-400 dark:placeholder:text-neutral-600 focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 disabled:opacity-60 shadow-xs"
 									/>
 								</div>

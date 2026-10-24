@@ -41,6 +41,12 @@
 	let previewStream: MediaStream | null = $state(null);
 	let videoElement = $state<HTMLVideoElement | null>(null);
 	let copiedLink = $state(false);
+	const MIC_CAPTURE_OPTIONS = {
+		echoCancellation: true,
+		noiseSuppression: true,
+		autoGainControl: true,
+		channelCount: 1
+	} as const;
 
 	onMount(async () => {
 		await resolveMeeting();
@@ -64,7 +70,7 @@
 			if (!isCameraOff) {
 				const stream = await navigator.mediaDevices.getUserMedia({
 					video: true,
-					audio: true
+					audio: MIC_CAPTURE_OPTIONS
 				});
 				previewStream = stream;
 				if (videoElement) {
@@ -74,7 +80,7 @@
 				stream.getAudioTracks().forEach((t) => (t.enabled = !isMuted));
 			} else {
 				const audioStream = await navigator.mediaDevices.getUserMedia({
-					audio: true
+					audio: MIC_CAPTURE_OPTIONS
 				});
 				previewStream = audioStream;
 				audioStream.getAudioTracks().forEach((t) => (t.enabled = !isMuted));

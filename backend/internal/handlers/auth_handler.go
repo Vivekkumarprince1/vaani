@@ -16,10 +16,15 @@ import (
 type AuthHandler struct {
 	db            *database.DB
 	authenticator *auth.Authenticator
+	onLangUpdate  func(userID uuid.UUID, username, language string)
 }
 
 func NewAuthHandler(db *database.DB, authenticator *auth.Authenticator) *AuthHandler {
 	return &AuthHandler{db: db, authenticator: authenticator}
+}
+
+func (h *AuthHandler) SetLanguageUpdateCallback(fn func(userID uuid.UUID, username, language string)) {
+	h.onLangUpdate = fn
 }
 
 type RegisterRequest struct {
@@ -177,19 +182,34 @@ func (h *AuthHandler) UpdateLanguage(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Language string `json:"language"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Language == "" {
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || strings.TrimSpace(body.Language) == "" {
 		http.Error(w, `{"error":"invalid language code"}`, http.StatusBadRequest)
 		return
 	}
 
-	_, err := h.db.Pool.Exec(r.Context(), "UPDATE users SET preferred_language = $1, updated_at = $2 WHERE id = $3", body.Language, time.Now(), claims.UserID)
+	lang := strings.ToLower(strings.TrimSpace(body.Language))
+	if lang == "auto" || lang == "detect" {
+		lang = "en"
+	}
+
+	_, err := h.db.Pool.Exec(r.Context(), "UPDATE users SET preferred_language = $1, updated_at = $2 WHERE id = $3", lang, time.Now(), claims.UserID)
 	if err != nil {
 		http.Error(w, `{"error":"failed to update language"}`, http.StatusInternalServerError)
 		return
 	}
 
+	token, _ := h.authenticator.GenerateToken(claims.UserID, claims.Username, claims.Role, lang)
+
+	if h.onLangUpdate != nil {
+		h.onLangUpdate(claims.UserID, claims.Username, lang)
+	}
+
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"status": "updated", "preferred_language": body.Language})
+	json.NewEncoder(w).Encode(map[string]string{
+		"status":             "updated",
+		"preferred_language": lang,
+		"token":              token,
+	})
 }
 
 func (h *AuthHandler) ListUsers(w http.ResponseWriter, r *http.Request) {

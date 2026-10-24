@@ -6,7 +6,6 @@
 	import { callSpeechService } from '#lib/services/callSpeech';
 	import ParticipantTile from './ParticipantTile.svelte';
 	import LiveSubtitlesOverlay from './LiveSubtitlesOverlay.svelte';
-	import { api } from '#lib/api/client';
 	import {
 		Mic,
 		MicOff,
@@ -17,11 +16,12 @@
 		Users,
 		Zap,
 		Globe,
-		Radio,
 		Phone,
 		Share2,
 		Check,
-		ChevronUp
+		ChevronUp,
+		Volume2,
+		VolumeX
 	} from 'lucide-svelte';
 
 	let copiedLink = $state(false);
@@ -37,7 +37,7 @@
 	}
 
 	const SUPPORTED_LANGUAGES = [
-		{ code: 'auto', name: 'Auto-Detect', flag: '✨', native: 'Zero Selection (Any Lang)' },
+		{ code: 'auto', name: 'Auto-Detect', flag: '✨', native: 'Any Language' },
 		{ code: 'en', name: 'English', flag: '🇺🇸', native: 'English' },
 		{ code: 'ru', name: 'Russian', flag: '🇷🇺', native: 'Русский' },
 		{ code: 'hi', name: 'Hindi', flag: '🇮🇳', native: 'हिन्दी' },
@@ -59,31 +59,40 @@
 	];
 
 	let showLanguageMenu = $state(false);
-	let speakLanguage = $state('auto');
+	let speakLanguage = $state(authStore.user?.preferred_language || 'en');
 	let myLanguage = $derived(
 		speakLanguage === 'auto'
 			? authStore.user?.preferred_language || 'en'
 			: speakLanguage
 	);
 
-	function selectLanguage(code: string) {
-		speakLanguage = code;
-		if (code !== 'auto' && authStore.user) {
-			authStore.user = { ...(authStore.user as any), preferred_language: code };
-			api.put('/auth/language', { language: code }).catch(() => {});
+	// Keep speakLanguage synced when user's profile language loads or updates in settings
+	$effect(() => {
+		const pref = authStore.user?.preferred_language;
+		if (pref && speakLanguage !== 'auto' && speakLanguage !== pref) {
+			speakLanguage = pref;
 		}
+	});
+
+	async function selectLanguage(code: string) {
+		speakLanguage = code;
 		callSpeechService.setLanguage(code);
+		showLanguageMenu = false;
+
+		const effectiveLang = code === 'auto' ? (authStore.user?.preferred_language || 'en') : code;
+		if (code !== 'auto') {
+			await authStore.updateLanguage(code).catch(() => {});
+		}
 		if (callStore.room?.localParticipant) {
 			callStore.room.localParticipant
 				.setMetadata(
 					JSON.stringify({
-						preferred_language: code === 'auto' ? (authStore.user?.preferred_language || 'en') : code,
+						preferred_language: effectiveLang,
 						username: authStore.user?.username || ''
 					})
 				)
 				.catch(() => {});
 		}
-		showLanguageMenu = false;
 	}
 
 	let currentLangObj = $derived(
@@ -95,47 +104,90 @@
 		}
 	);
 
-	let otherLanguage = $derived(
-		chatStore.activeRoom?.type === 'direct'
-			? chatStore.activeRoom.other_user?.preferred_language || (speakLanguage === 'en' ? 'hi' : 'en')
-			: 'multi'
-	);
+	let otherLanguage = $derived.by(() => {
+		// 1. Check live connected remote participants in the current call
+		for (const p of callStore.participants) {
+			const liveLang = callStore.participantLanguages[p.identity];
+			if (liveLang) return liveLang;
+			if (p.metadata) {
+				try {
+					const meta = JSON.parse(p.metadata);
+					if (meta?.preferred_language) return String(meta.preferred_language).toLowerCase();
+				} catch {}
+			}
+		}
+		// 2. Fallback to active chat room metadata
+		if (chatStore.activeRoom?.type === 'direct') {
+			const otherId = chatStore.activeRoom.other_user?.id;
+			if (otherId && callStore.participantLanguages[otherId]) {
+				return callStore.participantLanguages[otherId];
+			}
+			return chatStore.activeRoom.other_user?.preferred_language || (myLanguage === 'en' ? 'hi' : 'en');
+		}
+		if (callStore.participants.length > 1) {
+			return 'multi';
+		}
+		return myLanguage === 'en' ? 'hi' : 'en';
+	});
 
 	let isLanguageMatch = $derived.by(() => {
+		if (callStore.participants.length > 0) {
+			return callStore.participants.every((p) => {
+				const peerLang = callStore.participantLanguages[p.identity];
+				return Boolean(peerLang && peerLang.toLowerCase() === myLanguage.toLowerCase());
+			});
+		}
 		if (chatStore.activeRoom?.type === 'direct') {
 			const other = chatStore.activeRoom.other_user?.preferred_language;
 			return Boolean(other && other.toLowerCase() === myLanguage.toLowerCase());
-		}
-		if (chatStore.activeMembers.length > 1) {
-			return chatStore.activeMembers.every(
-				(m) => (m.preferred_language || 'en').toLowerCase() === myLanguage.toLowerCase()
-			);
 		}
 		return false;
 	});
 
 	// Only bypass if the user explicitly chose 'disabled' in preferences
 	let isTranslationBypassed = $derived(settingsStore.preferences.callTranslationMode === 'disabled');
+	let isTranslationActive = $derived(!isTranslationBypassed);
 
 	$effect(() => {
-		if (
-			callStore.isInCall &&
-			callStore.currentCallRoomId &&
-			!isTranslationBypassed &&
-			!callStore.isMuted
-		) {
-			callSpeechService.start(
-				callStore.currentCallRoomId,
-				speakLanguage,
-				callStore.localStream
-			);
+		callStore.isTranslationActive = isTranslationActive;
+	});
+
+	// Start/stop CallSpeechService based on call lifecycle (not on mute/language toggle)
+	$effect(() => {
+		const inCall = callStore.isInCall;
+		const roomId = callStore.currentCallRoomId;
+		const bypassed = isTranslationBypassed;
+
+		if (inCall && roomId && !bypassed) {
+			callSpeechService.start(roomId, speakLanguage, callStore.localStream);
 		} else {
 			callSpeechService.stop();
 		}
 
 		return () => {
-			callSpeechService.stop();
+			if (!callStore.isInCall || isTranslationBypassed) {
+				callSpeechService.stop();
+			}
 		};
+	});
+
+	// Keep microphone stream, mute state, and spoken language reactively synchronized without restarting TTS playback
+	$effect(() => {
+		if (callStore.isInCall && callStore.localStream) {
+			callSpeechService.updateStream(callStore.localStream);
+		}
+	});
+
+	$effect(() => {
+		if (callStore.isInCall) {
+			callSpeechService.setMuted(callStore.isMuted);
+		}
+	});
+
+	$effect(() => {
+		if (callStore.isInCall && speakLanguage) {
+			callSpeechService.setLanguage(speakLanguage);
+		}
 	});
 </script>
 
@@ -250,7 +302,7 @@
 						participant={participant}
 						isLocal={false}
 						name={participant.name || participant.identity}
-						language={otherLanguage}
+						language={callStore.participantLanguages[participant.identity] || otherLanguage}
 					/>
 				{/each}
 			</div>
@@ -350,6 +402,33 @@
 					</div>
 				{/if}
 			</div>
+
+			<!-- Audio Routing Suppress/Unsuppress Original Audio Toggle (when AI translation is active) -->
+			{#if isTranslationActive}
+				<button
+					onclick={() => callStore.toggleSuppressOriginalAudio()}
+					class="flex h-12 px-3.5 items-center gap-2 rounded-2xl transition-all active:scale-95 text-xs font-semibold shadow-md cursor-pointer {callStore.suppressOriginalAudio
+						? 'bg-amber-500/15 text-amber-300 border border-amber-500/30 hover:bg-amber-500/25'
+						: 'bg-neutral-800 text-neutral-300 border border-white/10 hover:bg-neutral-700'}"
+					title={callStore.suppressOriginalAudio
+						? 'Original foreign speech is muted: you hear only clean translated AI voice (click to allow original foreign voice)'
+						: 'Original foreign voice is allowed alongside translated AI voice (click to mute original speech)'}
+				>
+					{#if callStore.suppressOriginalAudio}
+						<VolumeX class="w-4 h-4 text-amber-400 shrink-0" />
+						<div class="flex flex-col text-left">
+							<span class="text-[9px] text-amber-400/80 uppercase font-mono leading-none">Audio</span>
+							<span class="font-bold text-amber-300 leading-tight">AI Voice Only</span>
+						</div>
+					{:else}
+						<Volume2 class="w-4 h-4 text-neutral-400 shrink-0" />
+						<div class="flex flex-col text-left">
+							<span class="text-[9px] text-neutral-400 uppercase font-mono leading-none">Audio</span>
+							<span class="font-bold text-neutral-200 leading-tight">Original + AI</span>
+						</div>
+					{/if}
+				</button>
+			{/if}
 
 			<!-- End Call Button -->
 			<button

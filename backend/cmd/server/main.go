@@ -25,6 +25,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/go-chi/cors"
+	"github.com/google/uuid"
 )
 
 func main() {
@@ -74,6 +75,7 @@ func main() {
 	if err := providerMgr.Initialize(ctx); err != nil {
 		log.Printf("⚠️  ProviderManager init warning: %v", err)
 	}
+	providerMgr.StartHotReloadListener(ctx)
 
 	// 8. Authenticator
 	authenticator := auth.NewAuthenticator(env.JWTSecret)
@@ -125,6 +127,13 @@ func main() {
 
 	// 11. Auth & Handlers
 	authHandler := handlers.NewAuthHandler(db, authenticator)
+	authHandler.SetLanguageUpdateCallback(func(userID uuid.UUID, username, language string) {
+		hub.BroadcastEvent("user_language_updated", map[string]interface{}{
+			"user_id":            userID.String(),
+			"username":           username,
+			"preferred_language": language,
+		})
+	})
 	adminHandler := handlers.NewAdminHandler(db, rdb, configEngine, livekitMgr, providerMgr, hub)
 	chatHandler := handlers.NewChatHandler(db, hub, providerMgr)
 	callHandler := handlers.NewCallHandler(db, hub, livekitMgr, providerMgr)
@@ -140,7 +149,7 @@ func main() {
 
 	// Token bucket rate limiter for auth endpoints (5 req/sec with burst of 15 per IP)
 	authLimiter := auth.NewIPRateLimiter(5.0, 15)
-	ttsLimiter := auth.NewIPRateLimiter(2.0, 10)
+	ttsLimiter := auth.NewIPRateLimiter(15.0, 40)
 
 	// Health Check
 	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {

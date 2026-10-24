@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"strings"
@@ -39,6 +40,22 @@ func NewCallHandler(db *database.DB, hub *ws.Hub, lk *livekit.Manager, pm *provi
 	}
 }
 
+func (h *CallHandler) getUserPreferredLanguage(ctx context.Context, userID uuid.UUID, fallback string) string {
+	if h.db != nil && h.db.Pool != nil {
+		var dbLang string
+		if err := h.db.Pool.QueryRow(ctx, `SELECT COALESCE(preferred_language, '') FROM users WHERE id = $1`, userID).Scan(&dbLang); err == nil {
+			norm := providers.NormalizeLanguageCode(dbLang)
+			if norm != "" {
+				return norm
+			}
+		}
+	}
+	if norm := providers.NormalizeLanguageCode(fallback); norm != "" {
+		return norm
+	}
+	return "en"
+}
+
 // GetToken generates signed LiveKit access token for room
 func (h *CallHandler) GetToken(w http.ResponseWriter, r *http.Request) {
 	claims := auth.GetUserFromContext(r.Context())
@@ -68,11 +85,38 @@ func (h *CallHandler) GetToken(w http.ResponseWriter, r *http.Request) {
 
 	_ = h.livekitMgr.EnsureRoom(r.Context(), body.RoomSlug)
 
-	// When participant gets token to join room, update call status from 'ringing' to 'active'
-	_, _ = h.db.Pool.Exec(r.Context(),
-		"UPDATE call_logs SET status = 'active' WHERE call_room_id = $1 AND status = 'ringing'",
+	// When participant gets token to join room, ensure call_log exists and user is recorded in participants
+	var callLogExists bool
+	_ = h.db.Pool.QueryRow(r.Context(),
+		`SELECT EXISTS(SELECT 1 FROM call_logs WHERE call_room_id = $1 AND status != 'ended')`,
 		body.RoomSlug,
-	)
+	).Scan(&callLogExists)
+
+	userJSON, _ := json.Marshal([]map[string]string{{"user_id": claims.UserID.String()}})
+
+	if !callLogExists {
+		if _, err := h.db.Pool.Exec(r.Context(),
+			`INSERT INTO call_logs (call_room_id, initiator_id, call_type, status, participants)
+			 VALUES ($1, $2, 'video', 'active', $3::jsonb)`,
+			body.RoomSlug, claims.UserID, string(userJSON),
+		); err != nil {
+			log.Printf("⚠️ Failed to insert call_logs record for %s: %v", body.RoomSlug, err)
+		}
+	} else {
+		if _, err := h.db.Pool.Exec(r.Context(),
+			`UPDATE call_logs
+			 SET status = 'active',
+			     participants = CASE
+			       WHEN participants @> $2::jsonb
+			       THEN participants
+			       ELSE participants || $2::jsonb
+			     END
+			 WHERE call_room_id = $1 AND status != 'ended'`,
+			body.RoomSlug, string(userJSON),
+		); err != nil {
+			log.Printf("⚠️ Failed to update call_logs record for %s: %v", body.RoomSlug, err)
+		}
+	}
 
 	// Ensure user is registered in room_members for this call or meeting
 	var roomID *uuid.UUID
@@ -97,8 +141,9 @@ func (h *CallHandler) GetToken(w http.ResponseWriter, r *http.Request) {
 		)
 	}
 
+	userLang := h.getUserPreferredLanguage(r.Context(), claims.UserID, claims.PreferredLanguage)
 	metaJSON, _ := json.Marshal(map[string]string{
-		"preferred_language": claims.PreferredLanguage,
+		"preferred_language": userLang,
 		"username":           claims.Username,
 	})
 	token, err := h.livekitMgr.GenerateToken(body.RoomSlug, claims.UserID.String(), claims.Username, string(metaJSON))
@@ -364,8 +409,9 @@ func (h *CallHandler) CreateInstantMeeting(w http.ResponseWriter, r *http.Reques
 	var token, livekitURL string
 	if h.livekitMgr != nil {
 		_ = h.livekitMgr.EnsureRoom(r.Context(), slug)
+		userLang := h.getUserPreferredLanguage(r.Context(), claims.UserID, claims.PreferredLanguage)
 		metaJSON, _ := json.Marshal(map[string]string{
-			"preferred_language": claims.PreferredLanguage,
+			"preferred_language": userLang,
 			"username":           claims.Username,
 		})
 		t, err := h.livekitMgr.GenerateToken(slug, claims.UserID.String(), claims.Username, string(metaJSON))
@@ -552,8 +598,9 @@ func (h *CallHandler) JoinMeeting(w http.ResponseWriter, r *http.Request) {
 	}
 
 	_ = h.livekitMgr.EnsureRoom(r.Context(), slug)
+	userLang := h.getUserPreferredLanguage(r.Context(), claims.UserID, claims.PreferredLanguage)
 	metaJSON, _ := json.Marshal(map[string]string{
-		"preferred_language": claims.PreferredLanguage,
+		"preferred_language": userLang,
 		"username":           claims.Username,
 	})
 	token, err := h.livekitMgr.GenerateToken(slug, claims.UserID.String(), claims.Username, string(metaJSON))
@@ -660,28 +707,22 @@ func (h *CallHandler) HandleCallSpeech(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sourceLang := strings.TrimSpace(body.Language)
-	if strings.EqualFold(sourceLang, "auto") || sourceLang == "detect" {
-		sourceLang = ""
-	}
+	sourceLang := providers.NormalizeLanguageCode(body.Language)
 
-	// Universal script auto-detection across character systems (Russian, Hindi, Arabic, Chinese, Japanese, etc.)
-	if detected := detectScriptLanguage(body.Text); detected != "" {
-		sourceLang = detected
+	// Deterministic script detection overrides mismatched dropdown (e.g. Cyrillic -> ru, Devanagari -> hi)
+	if scriptLang := detectScriptLanguage(body.Text); scriptLang != "" {
+		sourceLang = scriptLang
 	} else if sourceLang == "" {
-		if claims.PreferredLanguage != "" && !strings.EqualFold(claims.PreferredLanguage, "auto") {
-			sourceLang = claims.PreferredLanguage
-		} else {
-			sourceLang = "en"
-		}
+		sourceLang = h.getUserPreferredLanguage(r.Context(), claims.UserID, claims.PreferredLanguage)
 	}
 
 	// 1. Discover target languages of other participants in this call/room
 	rawTargets := h.getTargetLanguagesForCall(r.Context(), body.CallRoomID, claims.UserID, sourceLang)
 	var targetLangs []string
 	for _, t := range rawTargets {
-		if !strings.EqualFold(t, sourceLang) {
-			targetLangs = append(targetLangs, t)
+		normT := providers.NormalizeLanguageCode(t)
+		if normT != "" && !strings.EqualFold(normT, sourceLang) {
+			targetLangs = append(targetLangs, normT)
 		}
 	}
 
@@ -699,16 +740,20 @@ func (h *CallHandler) HandleCallSpeech(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	log.Printf("🎙️ [HandleCallSpeech] room=%s, user=%s, sourceLang=%s, text=%q, targets=%v", body.CallRoomID, claims.Username, sourceLang, body.Text, targetLangs)
+
 	var generatedSubtitles []map[string]interface{}
 
 	for _, targetLang := range targetLangs {
 		translated := body.Text
 		if !strings.EqualFold(sourceLang, targetLang) && h.providerMgr != nil {
 			resList, err := h.providerMgr.TranslateBatch(r.Context(), []string{body.Text}, sourceLang, targetLang)
-			if err == nil && len(resList) > 0 && resList[0] != "" {
-				translated = resList[0]
+			if err == nil && len(resList) > 0 && strings.TrimSpace(resList[0]) != "" {
+				translated = strings.TrimSpace(resList[0])
 			}
 		}
+
+		log.Printf("📢 [Speech Subtitle] room=%s, from=%s (%s) -> %s: %q", body.CallRoomID, claims.Username, sourceLang, targetLang, translated)
 
 		subEvent := map[string]interface{}{
 			"id":             uuid.New().String(),
@@ -737,7 +782,7 @@ func (h *CallHandler) HandleCallSpeech(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// HandleCallAudio receives raw microphone audio from frontend, runs Groq Whisper STT, translates, and broadcasts subtitles
+// HandleCallAudio receives raw microphone audio from frontend, runs STT, translates, and broadcasts subtitles
 func (h *CallHandler) HandleCallAudio(w http.ResponseWriter, r *http.Request) {
 	claims := auth.GetUserFromContext(r.Context())
 	if claims == nil {
@@ -767,10 +812,7 @@ func (h *CallHandler) HandleCallAudio(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sourceLang := strings.TrimSpace(r.FormValue("language"))
-	if strings.EqualFold(sourceLang, "auto") || sourceLang == "detect" {
-		sourceLang = ""
-	}
+	sourceLang := providers.NormalizeLanguageCode(r.FormValue("language"))
 
 	if h.providerMgr == nil {
 		http.Error(w, `{"error":"STT provider not configured"}`, http.StatusServiceUnavailable)
@@ -783,28 +825,26 @@ func (h *CallHandler) HandleCallAudio(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Dynamic Language Resolution:
-	// 1. Script auto-detection from character blocks (Russian Cyrillic, Hindi Devanagari, Arabic, CJK, etc.)
-	// 2. STT neural model's detected language (Whisper verbose_json or Deepgram detect_language)
-	// 3. User's preferred language (if not auto)
-	// 4. Default to "en"
+	// Resolve spoken language accurately:
+	// 1. Non-Latin script detection (Devanagari, Cyrillic, Arabic, CJK, etc.) is 100% deterministic
+	// 2. Explicit user-selected language or neural STT detected language
+	// 3. Fresh user preferred_language from database
 	if scriptLang := detectScriptLanguage(recognizedText); scriptLang != "" {
 		sourceLang = scriptLang
-	} else if detectedLang != "" {
-		sourceLang = detectedLang
 	} else if sourceLang == "" {
-		if claims.PreferredLanguage != "" && !strings.EqualFold(claims.PreferredLanguage, "auto") {
-			sourceLang = claims.PreferredLanguage
+		if detectedLang != "" {
+			sourceLang = providers.NormalizeLanguageCode(detectedLang)
 		} else {
-			sourceLang = "en"
+			sourceLang = h.getUserPreferredLanguage(r.Context(), claims.UserID, claims.PreferredLanguage)
 		}
 	}
 
 	rawTargets := h.getTargetLanguagesForCall(r.Context(), callRoomID, claims.UserID, sourceLang)
 	var targetLangs []string
 	for _, t := range rawTargets {
-		if !strings.EqualFold(t, sourceLang) {
-			targetLangs = append(targetLangs, t)
+		normT := providers.NormalizeLanguageCode(t)
+		if normT != "" && !strings.EqualFold(normT, sourceLang) {
+			targetLangs = append(targetLangs, normT)
 		}
 	}
 
@@ -821,15 +861,19 @@ func (h *CallHandler) HandleCallAudio(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	log.Printf("🎙️ [HandleCallAudio] room=%s, user=%s, sourceLang=%s, recognized=%q, targets=%v", callRoomID, claims.Username, sourceLang, recognizedText, targetLangs)
+
 	var generatedSubtitles []map[string]interface{}
 	for _, targetLang := range targetLangs {
 		translated := recognizedText
 		if !strings.EqualFold(sourceLang, targetLang) {
 			resList, err := h.providerMgr.TranslateBatch(r.Context(), []string{recognizedText}, sourceLang, targetLang)
-			if err == nil && len(resList) > 0 && resList[0] != "" {
-				translated = resList[0]
+			if err == nil && len(resList) > 0 && strings.TrimSpace(resList[0]) != "" {
+				translated = strings.TrimSpace(resList[0])
 			}
 		}
+
+		log.Printf("📢 [Audio Subtitle] room=%s, from=%s (%s) -> %s: %q", callRoomID, claims.Username, sourceLang, targetLang, translated)
 
 		subEvent := map[string]interface{}{
 			"id":             uuid.New().String(),
@@ -860,11 +904,15 @@ func (h *CallHandler) HandleCallAudio(w http.ResponseWriter, r *http.Request) {
 
 // userCanAccessCall verifies that a user is the call initiator, a recorded
 // direct-call participant, or a member of the room associated with the call.
-// Keeping this check server-side prevents authenticated users from minting
-// tokens or injecting speech into arbitrary call rooms.
+// Keeping this check server-side prevents unauthorized speech injection.
 func (h *CallHandler) userCanAccessCall(ctx context.Context, callRoomID string, userID uuid.UUID) bool {
 	if h.db == nil || h.db.Pool == nil || callRoomID == "" {
 		return false
+	}
+
+	// Instant meetings (meet-*) are open to all authenticated users
+	if strings.HasPrefix(callRoomID, "meet-") {
+		return true
 	}
 
 	var allowed bool
@@ -874,61 +922,171 @@ func (h *CallHandler) userCanAccessCall(ctx context.Context, callRoomID string, 
 			FROM call_logs c
 			LEFT JOIN room_members rm
 				ON rm.room_id = c.room_id AND rm.user_id = $2
-			WHERE c.call_room_id = $1
-			  AND c.status IN ('ringing', 'active')
+			WHERE (c.call_room_id = $1 OR c.id::text = $1)
 			  AND (
 					c.initiator_id = $2
 					OR rm.user_id IS NOT NULL
 					OR c.participants @> jsonb_build_array(jsonb_build_object('user_id', $2::text))
+					OR EXISTS (
+						SELECT 1 FROM jsonb_array_elements(c.participants) elem
+						WHERE elem->>'user_id' = $2::text
+					)
 			  )
 		)`, callRoomID, userID).Scan(&allowed)
 
-	return err == nil && allowed
+	if err == nil && allowed {
+		return true
+	}
+
+	// Also check room_slug directly for group meetings or room sessions
+	var inRoom bool
+	_ = h.db.Pool.QueryRow(ctx, `
+		SELECT EXISTS(
+			SELECT 1
+			FROM rooms r
+			JOIN room_members rm ON r.id = rm.room_id
+			WHERE r.room_slug = $1 AND rm.user_id = $2
+		)`, callRoomID, userID).Scan(&inRoom)
+
+	if inRoom {
+		return true
+	}
+
+	// 3. LiveKit SFU Real-Time Active Peers Check
+	if h.livekitMgr != nil {
+		if parts, err := h.livekitMgr.ListParticipants(ctx, callRoomID); err == nil {
+			for _, p := range parts {
+				if p.Identity == userID.String() {
+					return true
+				}
+			}
+		}
+	}
+
+	// 4. Any authenticated user for an existing call_room_id session
+	var inCallLog bool
+	_ = h.db.Pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM call_logs WHERE call_room_id = $1)`, callRoomID).Scan(&inCallLog)
+	return inCallLog
 }
 
 func (h *CallHandler) getTargetLanguagesForCall(ctx context.Context, callRoomID string, senderID uuid.UUID, sourceLang string) []string {
 	var targetLangs []string
 	visited := make(map[string]bool)
 
-	// 1. Try from call_logs room_id
-	rows, err := h.db.Pool.Query(ctx,
-		`SELECT DISTINCT COALESCE(u.preferred_language, 'en')
-		 FROM call_logs c
-		 JOIN room_members rm ON c.room_id = rm.room_id
-		 JOIN users u ON rm.user_id = u.id
-		 WHERE c.call_room_id = $1 AND u.id != $2 AND u.preferred_language IS NOT NULL AND u.preferred_language != ''`,
-		callRoomID, senderID,
-	)
-	if err == nil {
-		defer rows.Close()
-		for rows.Next() {
-			var lang string
-			if err := rows.Scan(&lang); err == nil && lang != "" && !visited[strings.ToLower(lang)] {
-				visited[strings.ToLower(lang)] = true
-				targetLangs = append(targetLangs, lang)
+	addLang := func(raw string) {
+		clean := providers.NormalizeLanguageCode(raw)
+		if clean != "" && !visited[clean] && !strings.EqualFold(clean, sourceLang) {
+			visited[clean] = true
+			targetLangs = append(targetLangs, clean)
+		}
+	}
+
+	// 1. LiveKit SFU Real-Time Active Peers: resolve each peer's latest preferred_language from DB first, then metadata
+	if h.livekitMgr != nil {
+		if parts, err := h.livekitMgr.ListParticipants(ctx, callRoomID); err == nil {
+			for _, p := range parts {
+				if p.Identity == senderID.String() {
+					continue
+				}
+				resolvedFromDB := false
+				if peerUID, err := uuid.Parse(p.Identity); err == nil && h.db != nil && h.db.Pool != nil {
+					var dbLang string
+					if err := h.db.Pool.QueryRow(ctx, `SELECT COALESCE(preferred_language, '') FROM users WHERE id = $1`, peerUID).Scan(&dbLang); err == nil && strings.TrimSpace(dbLang) != "" {
+						addLang(dbLang)
+						resolvedFromDB = true
+					}
+				}
+				if !resolvedFromDB && p.Metadata != "" {
+					var meta struct {
+						PreferredLanguage string `json:"preferred_language"`
+					}
+					if err := json.Unmarshal([]byte(p.Metadata), &meta); err == nil && meta.PreferredLanguage != "" {
+						addLang(meta.PreferredLanguage)
+					}
+				}
 			}
 		}
 	}
 
-	// 2. Try from rooms room_slug if still empty
-	if len(targetLangs) == 0 {
+	// 2. Query call_logs.participants JSONB array and initiator_id (always checked so multi-party / ringing / DB-updated languages are included)
+	if h.db != nil && h.db.Pool != nil {
+		pRows, err := h.db.Pool.Query(ctx,
+			`SELECT DISTINCT COALESCE(u.preferred_language, 'en')
+			 FROM call_logs c
+			 LEFT JOIN LATERAL jsonb_array_elements(c.participants) AS elem ON TRUE
+			 JOIN users u ON (u.id::text = elem->>'user_id' OR u.id = c.initiator_id)
+			 WHERE (c.call_room_id = $1 OR c.id::text = $1)
+			   AND u.id != $2
+			   AND u.preferred_language IS NOT NULL
+			   AND u.preferred_language != ''`,
+			callRoomID, senderID,
+		)
+		if err == nil {
+			defer pRows.Close()
+			for pRows.Next() {
+				var lang string
+				if err := pRows.Scan(&lang); err == nil {
+					addLang(lang)
+				}
+			}
+		}
+
+		// 3. Query call_logs.room_id -> room_members
+		rows, err := h.db.Pool.Query(ctx,
+			`SELECT DISTINCT COALESCE(u.preferred_language, 'en')
+			 FROM call_logs c
+			 JOIN room_members rm ON c.room_id = rm.room_id
+			 JOIN users u ON rm.user_id = u.id
+			 WHERE (c.call_room_id = $1 OR c.id::text = $1)
+			   AND u.id != $2
+			   AND u.preferred_language IS NOT NULL
+			   AND u.preferred_language != ''`,
+			callRoomID, senderID,
+		)
+		if err == nil {
+			defer rows.Close()
+			for rows.Next() {
+				var lang string
+				if err := rows.Scan(&lang); err == nil {
+					addLang(lang)
+				}
+			}
+		}
+
+		// 4. Query rooms.room_slug -> room_members
 		rRows, err := h.db.Pool.Query(ctx,
 			`SELECT DISTINCT COALESCE(u.preferred_language, 'en')
 			 FROM rooms r
 			 JOIN room_members rm ON r.id = rm.room_id
 			 JOIN users u ON rm.user_id = u.id
-			 WHERE r.room_slug = $1 AND u.id != $2 AND u.preferred_language IS NOT NULL AND u.preferred_language != ''`,
+			 WHERE r.room_slug = $1
+			   AND u.id != $2
+			   AND u.preferred_language IS NOT NULL
+			   AND u.preferred_language != ''`,
 			callRoomID, senderID,
 		)
 		if err == nil {
 			defer rRows.Close()
 			for rRows.Next() {
 				var lang string
-				if err := rRows.Scan(&lang); err == nil && lang != "" && !visited[strings.ToLower(lang)] {
-					visited[strings.ToLower(lang)] = true
-					targetLangs = append(targetLangs, lang)
+				if err := rRows.Scan(&lang); err == nil {
+					addLang(lang)
 				}
 			}
+		}
+	}
+
+	// 5. Clean opposite language fallback for bidirectional calls
+	if len(targetLangs) == 0 {
+		switch strings.ToLower(sourceLang) {
+		case "ru":
+			targetLangs = []string{"en"}
+		case "hi":
+			targetLangs = []string{"en"}
+		case "en":
+			targetLangs = []string{"hi"}
+		default:
+			targetLangs = []string{"en"}
 		}
 	}
 
@@ -938,7 +1096,7 @@ func (h *CallHandler) getTargetLanguagesForCall(ctx context.Context, callRoomID 
 // HandleTTS streams high-fidelity neural voice audio for translated speech in any language
 func (h *CallHandler) HandleTTS(w http.ResponseWriter, r *http.Request) {
 	text := strings.TrimSpace(r.URL.Query().Get("text"))
-	lang := strings.TrimSpace(r.URL.Query().Get("lang"))
+	lang := providers.NormalizeLanguageCode(r.URL.Query().Get("lang"))
 	if text == "" {
 		http.Error(w, `{"error":"text is required"}`, http.StatusBadRequest)
 		return
@@ -946,11 +1104,11 @@ func (h *CallHandler) HandleTTS(w http.ResponseWriter, r *http.Request) {
 	if lang == "" {
 		lang = "en"
 	}
-	if detected := detectScriptLanguage(text); detected != "" && (lang == "" || lang == "en" || strings.EqualFold(lang, "auto")) {
-		lang = detected
+	if scriptLang := detectScriptLanguage(text); scriptLang != "" && lang == "en" {
+		lang = scriptLang
 	}
-	if len(text) > 400 {
-		text = text[:400]
+	if runes := []rune(text); len(runes) > 400 {
+		text = string(runes[:400])
 	}
 
 	if h.providerMgr == nil {

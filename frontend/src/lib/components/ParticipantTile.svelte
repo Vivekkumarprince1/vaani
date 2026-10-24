@@ -48,6 +48,25 @@
 	let isCamActive = $state(true);
 	let isMicActive = $state(true);
 
+	let isAudioMuted = $derived(
+		isLocal || callStore.shouldMuteRemoteAudio
+	);
+
+	// Reactive remote audio track suppression
+	$effect(() => {
+		if (audioEl) {
+			audioEl.muted = isAudioMuted;
+			audioEl.volume = isAudioMuted ? 0 : 1.0;
+		}
+		if (!isLocal && participant?.trackPublications) {
+			for (const pub of participant.trackPublications.values()) {
+				if (pub.kind === Track.Kind.Audio && pub.track?.mediaStreamTrack) {
+					pub.track.mediaStreamTrack.enabled = !isAudioMuted;
+				}
+			}
+		}
+	});
+
 	// Local Video Attachment
 	$effect(() => {
 		if (!isLocal) return;
@@ -89,6 +108,11 @@
 			}
 			if (publication.track.kind === Track.Kind.Audio && audioEl) {
 				publication.track.attach(audioEl);
+				audioEl.muted = isAudioMuted;
+				audioEl.volume = isAudioMuted ? 0 : 1.0;
+				if (publication.track.mediaStreamTrack) {
+					publication.track.mediaStreamTrack.enabled = !isAudioMuted;
+				}
 			}
 		};
 
@@ -153,7 +177,7 @@
 
 	<!-- Remote Audio Element -->
 	{#if !isLocal}
-		<audio bind:this={audioEl} autoplay></audio>
+		<audio bind:this={audioEl} autoplay muted={isAudioMuted}></audio>
 	{/if}
 
 	<!-- Avatar Fallback when Camera is Off -->
@@ -186,6 +210,10 @@
 		{#if !isMicActive}
 			<span class="text-rose-400" title="Microphone Muted">
 				<MicOff class="w-3.5 h-3.5" />
+			</span>
+		{:else if isAudioMuted && !isLocal}
+			<span class="text-amber-400 text-[9px] font-mono px-1 rounded bg-amber-500/10 border border-amber-500/20" title="AI Translated Audio Active (Original Voice Suppressed)">
+				AI VOICE
 			</span>
 		{/if}
 	</div>

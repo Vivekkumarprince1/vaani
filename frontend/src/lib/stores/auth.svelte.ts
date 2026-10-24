@@ -63,8 +63,15 @@ class AuthStore {
 
 	async updateLanguage(language: string) {
 		if (!this.user) return;
-		await api.put('/auth/language', { language });
-		this.user.preferred_language = language;
+		const res = await api.put('/auth/language', { language });
+		const updatedLang = res.data?.preferred_language || language;
+		this.user = { ...this.user, preferred_language: updatedLang };
+		if (res.data?.token) {
+			this.token = res.data.token;
+			if (typeof window !== 'undefined') {
+				localStorage.setItem('vaani_token', res.data.token);
+			}
+		}
 	}
 
 	logout() {
